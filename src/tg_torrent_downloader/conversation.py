@@ -1,0 +1,528 @@
+"""Telegram search conversation; no torrent retrieval or Transmission submission."""
+
+import asyncio
+import sqlite3
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from uuid import uuid4
+
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LinkPreviewOptions,
+    Message,
+)
+
+from tg_torrent_downloader.logging import diagnostic_event, log_state, log_user_input
+from tg_torrent_downloader.models import Search, Selection, SelectionStatus
+from tg_torrent_downloader.rutracker import (
+    AuthenticationRequired,
+    CaptchaChallenge,
+    CaptchaExpired,
+    CaptchaUnavailable,
+    InvalidCredentials,
+    RuTrackerClient,
+    RuTrackerError,
+    TopicUnavailable,
+)
+from tg_torrent_downloader.storage import Expired, StateError, WorkflowStore
+
+_HELP = (
+    "Seed Scout\n/start — connect to RuTracker and begin a search\n"
+    "/search — new search\n/cancel — cancel the current operation\n/help — this guide\n\n"
+    "Solve any login CAPTCHA, send your search query, then pick a result number. "
+    "Back restores the same list. Downloads will be enabled in a later step."
+)
+_LABELS = {
+    "new": "New search",
+    "cancel": "Cancel",
+    "retry": "Retry",
+    "back": "Back",
+    "download": "Download",
+}
+
+
+def split_text(text: str, limit: int = 4000) -> list[str]:
+    """Preserve all text and split within Telegram's UTF-16 message length limit."""
+    if limit < 2:
+        raise ValueError("Message limit must be at least 2")
+    chunks, current = [], []
+    size = 0
+    for character in text:
+        units = 2 if ord(character) > 0xFFFF else 1
+        if size + units > limit:
+            chunks.append("".join(current))
+            current, size = [], 0
+        current.append(character)
+        size += units
+    if current:
+        chunks.append("".join(current))
+    return chunks or [" "]
+
+
+@dataclass(repr=False)
+class Conversation:
+    user_id: int
+    chat_id: int
+    touched_at: float
+    stage: str = "idle"
+    token: str = field(default_factory=lambda: uuid4().hex)
+    actions: tuple[str, ...] = ()
+    client: RuTrackerClient | None = None
+    challenge: CaptchaChallenge | None = None
+    query: str = ""
+    search: Search | None = None
+    selected: Selection | None = None
+    resume: str = "query"
+    task: asyncio.Task | None = None
+
+
+class TelegramConversation:
+    def __init__(
+        self,
+        bot: Bot,
+        store: WorkflowStore,
+        allowed_users: frozenset[int],
+        client_factory: Callable[[int, int], RuTrackerClient],
+        *,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.bot = bot
+        self.store = store
+        self.allowed_users = allowed_users
+        self.client_factory = client_factory
+        self.clock = clock
+        self.sessions: dict[tuple[int, int], Conversation] = {}
+
+    async def _call(self, method, **kwargs):
+        for attempt in range(3):
+            try:
+                return await method(**kwargs)
+            except TelegramRetryAfter as error:
+                if attempt == 2 or error.retry_after > 30:
+                    raise
+                await asyncio.sleep(error.retry_after)
+
+    async def _text(self, chat_id: int, text: str, markup=None) -> None:
+        chunks = split_text(text)
+        for index, chunk in enumerate(chunks):
+            await self._call(
+                self.bot.send_message,
+                chat_id=chat_id,
+                text=chunk,
+                parse_mode=None,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                reply_markup=markup if index == len(chunks) - 1 else None,
+            )
+
+    def _keyboard(
+        self, conversation: Conversation, actions: tuple[str, ...]
+    ) -> InlineKeyboardMarkup:
+        conversation.token = uuid4().hex
+        conversation.actions = actions
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=_LABELS[action], callback_data=f"sc:{conversation.token}:{action}"
+                    )
+                    for action in actions
+                ]
+            ]
+        )
+
+    def _stage(self, conversation: Conversation, stage: str) -> None:
+        conversation.stage = stage
+        log_state(
+            stage,
+            user_id=conversation.user_id,
+            chat_id=conversation.chat_id,
+            topic_id=conversation.selected.result.topic_id if conversation.selected else None,
+            selection_id=conversation.selected.id if conversation.selected else None,
+        )
+
+    async def _screen(
+        self, conversation: Conversation, text: str, actions: tuple[str, ...]
+    ) -> None:
+        await self._text(conversation.chat_id, text, self._keyboard(conversation, actions))
+
+    async def _discard(self, conversation: Conversation) -> None:
+        task = conversation.task
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        conversation.task = asyncio.current_task()
+        if conversation.selected is not None:
+            try:
+                await asyncio.to_thread(
+                    self.store.cancel,
+                    conversation.selected.id,
+                    conversation.user_id,
+                    conversation.chat_id,
+                )
+            except StateError, sqlite3.Error:
+                # Expired or nonpending selections cannot be cancelled; never reset them.
+                pass
+        if conversation.client:
+            await conversation.client.close()
+        key = (conversation.user_id, conversation.chat_id)
+        if self.sessions.get(key) is conversation:
+            self.sessions.pop(key, None)
+        self._stage(conversation, "cancelled")
+
+    async def close(self) -> None:
+        for conversation in list(self.sessions.values()):
+            await self._discard(conversation)
+
+    async def reap_idle(self) -> None:
+        for conversation in list(self.sessions.values()):
+            if not conversation.task and self.clock() - conversation.touched_at >= 900:
+                self.sessions.pop((conversation.user_id, conversation.chat_id), None)
+                await self._discard(conversation)
+
+    async def _client(self, conversation: Conversation) -> RuTrackerClient:
+        if conversation.client is None:
+            conversation.client = self.client_factory(conversation.user_id, conversation.chat_id)
+            await conversation.client.__aenter__()
+        return conversation.client
+
+    async def handle_message(self, message: Message) -> None:
+        if not message.from_user:
+            return
+        user_id, chat_id = message.from_user.id, message.chat.id
+        if user_id not in self.allowed_users:
+            await self._text(chat_id, "This bot is restricted to allowed users.")
+            return
+        conversation = self.sessions.get((user_id, chat_id))
+        text = message.text
+        command = (
+            text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+            if text and text.startswith("/")
+            else ""
+        )
+        log_user_input(
+            user_id,
+            chat_id,
+            text if text is not None else "[non-text input]",
+            sensitive=bool(
+                conversation
+                and conversation.stage == "captcha"
+                and command not in {"/start", "/search", "/cancel", "/help"}
+            ),
+        )
+        if command == "/help":
+            await self._text(chat_id, _HELP)
+            return
+        if command == "/cancel":
+            if conversation:
+                await self._discard(conversation)
+            await self._text(chat_id, "Cancelled. Use /start to begin again.")
+            return
+        if conversation and conversation.task:
+            await self._text(chat_id, "An operation is running. You can /cancel it.")
+            return
+        if conversation and self.clock() - conversation.touched_at >= 900:
+            conversation.task = asyncio.current_task()
+            await self._discard(conversation)
+            conversation = None
+        if command == "/start":
+            if conversation:
+                conversation.task = asyncio.current_task()
+                await self._discard(conversation)
+            conversation = None
+        if conversation is None:
+            if command not in {"/start", "/search"}:
+                await self._text(
+                    chat_id,
+                    "Use /start to begin a new search. Earlier interactions may have expired.",
+                )
+                return
+            conversation = Conversation(user_id, chat_id, self.clock())
+            self.sessions[(user_id, chat_id)] = conversation
+        conversation.touched_at = self.clock()
+        await self._execute(conversation, self._message_action(conversation, text, command))
+
+    async def _message_action(self, c: Conversation, text: str | None, command: str) -> None:
+        if command in {"/start", "/search"}:
+            c.query, c.search, c.selected = "", None, None
+            await self._authenticate(c, "query")
+        elif command:
+            await self._text(c.chat_id, "Unknown command. Use /help for available commands.")
+        elif text is None or not text.strip():
+            await self._text(c.chat_id, "Send a nonempty text message.")
+        elif c.stage == "captcha":
+            client = await self._client(c)
+            try:
+                challenge = await client.answer_captcha(
+                    c.challenge.id, text, user_id=c.user_id, chat_id=c.chat_id
+                )
+            except CaptchaExpired:
+                c.challenge = None
+                await self._authenticate(c, c.resume)
+                return
+            c.challenge = challenge
+            if challenge:
+                await self._captcha(c)
+            else:
+                await self._resume(c)
+        elif c.stage == "query":
+            c.query = text  # Preserve whitespace and punctuation exactly for RuTracker search.
+            await self._search(c)
+        elif c.stage == "results":
+            search = await asyncio.to_thread(
+                self.store.get_search, c.search.id, c.user_id, c.chat_id
+            )
+            if (
+                not text.isascii()
+                or not text.isdigit()
+                or len(text) > 2
+                or not 1 <= int(text) <= len(search.results)
+            ):
+                await self._text(
+                    c.chat_id, f"Choose a result number from 1 to {len(search.results)}."
+                )
+                return
+            c.selected = await asyncio.to_thread(
+                self.store.select, search.id, int(text) - 1, c.user_id, c.chat_id
+            )
+            await self._topic(c)
+        else:
+            await self._text(
+                c.chat_id, "Use the buttons below the last response, or /search for a new search."
+            )
+
+    async def handle_callback(self, callback: CallbackQuery) -> None:
+        if callback.from_user.id not in self.allowed_users:
+            await self._call(
+                self.bot.answer_callback_query, callback_query_id=callback.id, text="Access denied."
+            )
+            return
+        if not isinstance(callback.message, Message):
+            await self._call(
+                self.bot.answer_callback_query,
+                callback_query_id=callback.id,
+                text="Use /start in the bot chat.",
+            )
+            return
+        c = self.sessions.get((callback.from_user.id, callback.message.chat.id))
+        pieces = (callback.data or "").split(":")
+        valid = (
+            c is not None
+            and len(pieces) == 3
+            and pieces[0] == "sc"
+            and pieces[1] == c.token
+            and pieces[2] in c.actions
+        )
+        if not valid or self.clock() - c.touched_at >= 900:
+            await self._call(
+                self.bot.answer_callback_query,
+                callback_query_id=callback.id,
+                text="This control expired. Use /start or the latest buttons.",
+            )
+            return
+        action = pieces[2]
+        log_user_input(c.user_id, c.chat_id, action)
+        if c.task and action != "cancel":
+            await self._call(
+                self.bot.answer_callback_query,
+                callback_query_id=callback.id,
+                text="Working; you can cancel.",
+            )
+            return
+        if action == "cancel":
+            await self._call(self.bot.answer_callback_query, callback_query_id=callback.id)
+            await self._discard(c)
+            await self._text(c.chat_id, "Cancelled. Use /start to begin again.")
+            return
+        c.task = asyncio.current_task()
+        try:
+            await self._call(self.bot.answer_callback_query, callback_query_id=callback.id)
+            c.touched_at = self.clock()
+            await self._execute(c, self._callback_action(c, action))
+        finally:
+            if c.task is asyncio.current_task():
+                c.task = None
+
+    async def _callback_action(self, c: Conversation, action: str) -> None:
+        if action == "new":
+            c.query, c.search, c.selected = "", None, None
+            await self._authenticate(c, "query")
+        elif action == "back":
+            await self._results(c)
+        elif action == "retry":
+            if c.resume == "search":
+                await self._search(c)
+            elif c.resume == "topic":
+                await self._topic(c)
+            else:
+                await self._authenticate(c, "query")
+        elif action == "download":
+            # Step 4 only: do not claim confirmation or fetch .torrent bytes yet.
+            await asyncio.to_thread(self.store.get_search, c.search.id, c.user_id, c.chat_id)
+            selected = await asyncio.to_thread(
+                self.store.get_selection, c.selected.id, c.user_id, c.chat_id
+            )
+            if selected.status != SelectionStatus.PENDING:
+                await self._text(c.chat_id, f"This selection is already {selected.status}.")
+            else:
+                await self._text(
+                    c.chat_id,
+                    "Downloads are not enabled yet. You can go Back or start a new search.",
+                )
+
+    async def _execute(self, c: Conversation, action) -> None:
+        task = asyncio.current_task()
+        c.task = task
+        try:
+            await action
+        except (RuTrackerError, StateError, ValueError) as error:
+            c.challenge = None
+            self._stage(c, "error")
+            diagnostic_event(
+                "conversation.error",
+                user_id=c.user_id,
+                chat_id=c.chat_id,
+                error=type(error).__name__,
+                resume=c.resume,
+            )
+            if isinstance(error, (Expired, StateError)):
+                await self._screen(
+                    c,
+                    "This search or selection is unavailable. Start a new search.",
+                    ("new", "cancel"),
+                )
+            elif isinstance(error, InvalidCredentials):
+                await self._screen(
+                    c,
+                    "RuTracker login failed. Check the configured credentials.",
+                    ("new", "cancel"),
+                )
+            else:
+                await self._screen(c, str(error), ("retry", "new", "cancel"))
+        except (TelegramAPIError, sqlite3.Error) as error:
+            self._stage(c, "error")
+            diagnostic_event(
+                "conversation.error",
+                user_id=c.user_id,
+                chat_id=c.chat_id,
+                error=type(error).__name__,
+            )
+            if isinstance(error, sqlite3.Error):
+                await self._text(
+                    c.chat_id, "Local search storage is unavailable. Try /start again."
+                )
+        finally:
+            if c.task is task:
+                c.task = None
+
+    async def _authenticate(self, c: Conversation, resume: str) -> None:
+        c.resume = resume
+        self._stage(c, "authenticating")
+        await self._screen(
+            c,
+            "Checking RuTracker login. Chrome may open for browser verification. You can /cancel.",
+            ("cancel",),
+        )
+        client = await self._client(c)
+        c.challenge = await client.ensure_authenticated()
+        if c.challenge:
+            await self._captcha(c)
+        else:
+            await self._resume(c)
+
+    async def _captcha(self, c: Conversation) -> None:
+        if c.challenge.user_id != c.user_id or c.challenge.chat_id != c.chat_id:
+            raise CaptchaUnavailable("This CAPTCHA does not belong to the current user and chat")
+        self._stage(c, "captcha")
+        extension = {"image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}.get(
+            c.challenge.content_type, "png"
+        )
+        await self._call(
+            self.bot.send_photo,
+            chat_id=c.chat_id,
+            photo=BufferedInputFile(c.challenge.image, filename=f"captcha.{extension}"),
+            caption="Type the characters in this CAPTCHA, or /cancel.",
+            parse_mode=None,
+            reply_markup=self._keyboard(c, ("cancel",)),
+        )
+
+    async def _resume(self, c: Conversation) -> None:
+        c.challenge = None
+        if c.resume == "search":
+            await self._search(c, reauthenticate=False)
+        elif c.resume == "topic":
+            await self._topic(c, reauthenticate=False)
+        else:
+            c.query, c.search, c.selected = "", None, None
+            self._stage(c, "query")
+            await self._screen(c, "What would you like to find? Send a search query.", ("cancel",))
+
+    async def _search(self, c: Conversation, *, reauthenticate: bool = True) -> None:
+        c.resume = "search"
+        self._stage(c, "searching")
+        await self._screen(c, "Searching RuTracker…", ("cancel",))
+        client = await self._client(c)
+        try:
+            results = await client.search(c.query)
+        except AuthenticationRequired:
+            if not reauthenticate:
+                raise
+            await self._authenticate(c, "search")
+            return
+        if not results:
+            self._stage(c, "query")
+            await self._screen(c, "No matches found. Send another query.", ("new", "cancel"))
+            return
+        c.search = await asyncio.to_thread(
+            self.store.save_search, c.user_id, c.chat_id, c.query, results[:10]
+        )
+        c.selected = None
+        await self._results(c)
+
+    async def _results(self, c: Conversation) -> None:
+        c.search = await asyncio.to_thread(self.store.get_search, c.search.id, c.user_id, c.chat_id)
+        c.selected = None
+        self._stage(c, "results")
+        lines = []
+        for index, result in enumerate(c.search.results, 1):
+            metadata = []
+            if result.size:
+                metadata.append(result.size)
+            if result.seeds is not None:
+                metadata.append(f"Seeds: {result.seeds}")
+            lines.append(
+                f"{index}. {result.title}\n{result.topic_url}"
+                + ("\n" + " · ".join(metadata) if metadata else "")
+            )
+        await self._screen(
+            c, "\n\n".join(lines) + f"\n\nSend a number from 1 to {len(lines)}.", ("new", "cancel")
+        )
+
+    async def _topic(self, c: Conversation, *, reauthenticate: bool = True) -> None:
+        c.resume = "topic"
+        await asyncio.to_thread(self.store.get_search, c.search.id, c.user_id, c.chat_id)
+        self._stage(c, "loading_topic")
+        await self._screen(c, "Loading the selected release…", ("cancel",))
+        client = await self._client(c)
+        try:
+            details = await client.get_topic(c.selected.result)
+        except AuthenticationRequired:
+            if not reauthenticate:
+                raise
+            await self._authenticate(c, "topic")
+            return
+        except TopicUnavailable:
+            await self._text(c.chat_id, "That topic is unavailable. Choose another result.")
+            await self._results(c)
+            return
+        self._stage(c, "description")
+        await self._screen(
+            c,
+            f"{details.result.title}\n{details.result.topic_url}\n\n{details.description}",
+            ("download", "back", "new", "cancel"),
+        )

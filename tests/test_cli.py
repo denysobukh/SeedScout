@@ -3,7 +3,7 @@ import subprocess
 import sys
 
 
-def run_cli(tmp_path, *args, configured=False, overrides=None):
+def run_cli(tmp_path, *args, configured=False, overrides=None, mock_polling=False):
     env = {
         key: value
         for key, value in os.environ.items()
@@ -20,8 +20,22 @@ def run_cli(tmp_path, *args, configured=False, overrides=None):
             }
         )
     env.update(overrides or {})
+    invocation = [sys.executable, "-m", "tg_torrent_downloader", *args]
+    if mock_polling:
+        invocation = [
+            sys.executable,
+            "-c",
+            (
+                "import importlib, logging\n"
+                "module = importlib.import_module('tg_torrent_downloader.__main__')\n"
+                "async def fake_polling(settings):\n"
+                "    logging.getLogger('test').info('Polling simulated')\n"
+                "module.run_bot = fake_polling\n"
+                "raise SystemExit(module.main())\n"
+            ),
+        ]
     return subprocess.run(
-        [sys.executable, "-m", "tg_torrent_downloader", *args],
+        invocation,
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -51,17 +65,17 @@ def test_check_configuration_does_not_contact_services_or_create_state(tmp_path)
     assert "test-password" not in result.stderr
 
 
-def test_default_command_is_honest_about_unimplemented_polling(tmp_path):
-    result = run_cli(tmp_path, configured=True)
-    assert result.returncode == 1
-    assert "not implemented yet" in result.stderr
+def test_default_command_runs_polling(tmp_path):
+    result = run_cli(tmp_path, configured=True, mock_polling=True)
+    assert result.returncode == 0
+    assert "Polling simulated" in result.stderr
 
 
 def test_startup_creates_diagnostic_file(tmp_path):
-    result = run_cli(tmp_path, configured=True)
+    result = run_cli(tmp_path, configured=True, mock_polling=True)
     path = tmp_path / ".runtime" / "bot.log"
-    assert result.returncode == 1
-    assert "not implemented yet" in path.read_text()
+    assert result.returncode == 0
+    assert "Polling simulated" in path.read_text()
     assert path.stat().st_mode & 0o777 == 0o600
 
 

@@ -9,9 +9,9 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 - Language: Python, approved by the user.
 - Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
 - Planning: specification, implementation plan, and progress file approved by the user.
-- Implementation: step 3 committed as 345d85d; diagnostic logging specification committed as 786035a. Diagnostic logging committed as 07f5f91. Browser-session login update approved by the user and included in its implementation commit.
-- Next action: implement step 4 (Telegram search and selection), then stop for review before committing. Actual credential login and authenticated RuTracker operations still need live verification.
-- Live verification: Chrome obtained cf_clearance and aiohttp reused the imported cookies/User-Agent to fetch the login page successfully. Actual login and authenticated search/topic behavior remain unverified. Live Transmission submissions still require explicit test authorization.
+- Implementation: steps 1–3 and follow-ups committed (browser session e59a741; plan reorder a9b72ab). Step 4 Telegram conversation and authentication-marker fix approved by the user and included in this implementation commit.
+- Next action: step 5 (Transmission integration) has not started. Keep polling stopped unless the user requests another Telegram test. Backend login, session recheck, search, and topic extraction now pass live verification after the authentication-marker fix. The corrected Telegram conversation still needs retesting; polling remains stopped.
+- Live verification: Chrome obtained cf_clearance and aiohttp reused the imported cookies/User-Agent to fetch the login page successfully. A later live investigation also verified credential login, session recheck, search, and full topic extraction. CAPTCHA and the fixed Telegram interaction remain unverified. Live Transmission submissions still require explicit test authorization.
 
 ## Step tracker
 
@@ -23,7 +23,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 3 | RuTracker integration | Approved; committed; live authenticated verification limited |
 | 3a | Diagnostic logging follow-up | Approved; committed |
 | 3b | Playwright browser-session login | Approved; committed |
-| 4 | Telegram search and selection | Not started |
+| 4 | Telegram search and selection | Approved; committed |
 | 5 | Transmission integration | Not started |
 | 6 | Confirmed download and submission | Not started |
 | 7 | Operational readiness and acceptance | Not started |
@@ -125,3 +125,28 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 
 - User requested Telegram conversation before Transmission integration. Renumbered remaining steps: 4 Telegram search and selection, 5 Transmission integration, 6 confirmed download/submission, 7 operational readiness.
 - Updated cross-references to the new numbering; next implementation step is 4 (Telegram). Documentation/order change only; no runtime behavior changed. User approved committing this update.
+
+## Step 4 Telegram conversation review checkpoint
+
+- Saved the user-provided Telegram allowlist ID in the ignored local .env, preserving existing credentials and 0600 permissions. No local configuration or credential values are committed.
+- Added TelegramConversation and aiogram long-polling runtime with /start, /search, /help, /cancel, access control before upstream work, and per-user/chat browser clients.
+- Authenticate before prompting for a query; deliver user/chat-scoped CAPTCHA images, redact answers, refresh expired/incorrect challenges, and resume saved searches/topics after reauthentication.
+- Accept unchanged queries, display the first ten results with original order, numbering, links, size/seed metadata, and validate numeric selection. Retrieve full descriptions as plain text with disabled previews and UTF-16-safe splitting; show Download/Back/New search/Cancel on the final message.
+- Back preserves the stored results and numbering. Download remains a safe step-4 placeholder: no confirmation claim, torrent file retrieval, or Transmission operation. Cancellation interrupts in-flight work and cancels pending selections when possible.
+- Scope controls to the current user/chat and fresh screen token, reject stale/forged/restarted controls, enforce search expiry, and expire/clean idle UI/client sessions. SQLite operations run via asyncio.to_thread; active conversation/browser state is safely rejected after restart.
+- Wire command, numeric input, and button diagnostic logging; CAPTCHA answers remain redacted. Added bounded Telegram rate-limit retries and client/bot cleanup on shutdown.
+- Normal entry point now runs polling. --check-config remains offline and side-effect free. Omitted TRANSMISSION_RPC_URL now uses the standard local default so step 4 needs no Transmission configuration or connection.
+- Validation: full suite 187 tests passed (34 new cases), Ruff lint/format checks and git diff whitespace checks passed. Coverage includes actual aiogram routing, mocked polling lifecycle, access control, top-10 results, numeric input, CAPTCHA, retries, description splitting, cancellation, concurrent callbacks, stale/foreign controls, restart/expiry, and placeholder Download behavior.
+- Read-only Telegram getMe verified the stored token belongs to @SeedScoutBot. Local --check-config passed with the saved allowlist and credentials. No live polling, Telegram messages, torrent retrievals, or Transmission submissions were performed.
+- Updated README with startup instructions, current behavior, default RPC configuration, and restart/expiry semantics. Real credential login and a live Telegram conversation remain unverified; browser clearance transfer was verified in step 3b.
+- Review: user approved committing step 4 together with the authentication-marker fix after investigation.
+
+## Live Telegram test and authentication-marker fix
+
+- At the user's request, started local polling. Their /start reached browser verification and a successful login POST/homepage redirect, but the bot reported an unknown login result. Retry reported that no login form was found.
+- Stopped polling with SIGTERM at the user's request and confirmed clean process exit. Polling remains stopped throughout this investigation.
+- Root cause: _authenticated() only recognized logout URLs. A sanitized live inspection confirmed the authenticated page contains a nonempty #logged-in-username marker, no matching logout link, and no login input fields. The credentials had succeeded; the parser misclassified the authenticated page.
+- Added the observed marker as positive authentication evidence while retaining legacy logout-link support. Updated the anonymized authenticated fixture and added regressions for recognition without a logout link and rejection of an empty marker.
+- Live verification after the fix: credential login recognized; repeated authentication check True; read-only Ubuntu search returned 10 results; selected topic description extracted (8708 characters). No torrent file retrieved or submitted, no Telegram polling/messages during the investigation, and no raw credentials/cookies/HTML saved or printed.
+- Validation: 83 focused RuTracker/conversation tests passed; full suite 189 tests passed; lint, formatting, and whitespace checks passed.
+- Updated README and fixture notes. User approved committing step 4 and this fix. Next testing action, only when requested: restart the bot for the user's Telegram walkthrough. Do not automatically restart polling.

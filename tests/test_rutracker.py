@@ -623,3 +623,26 @@ def test_denied_session_is_invalidated_without_replaying_request():
         assert len(session.requests) == 1
 
     asyncio.run(run())
+
+
+def test_logged_in_username_is_recognized_without_a_logout_link():
+    async def run():
+        client = ScriptedClient([page("authenticated"), page("authenticated")])
+        assert await client.ensure_authenticated() is None
+        assert await client.check_authenticated() is True
+        assert all(method == "GET" for method, _, _ in client.requests)
+
+    asyncio.run(run())
+
+
+def test_empty_logged_in_marker_is_not_authentication_evidence():
+    async def run():
+        response = _Response(
+            b'<span id="logged-in-username"></span><a href="login.php">Login</a>',
+            "text/html",
+            "utf-8",
+        )
+        client = ScriptedClient([response])
+        assert await client.check_authenticated() is False
+
+    asyncio.run(run())

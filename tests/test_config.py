@@ -43,6 +43,12 @@ def test_required_settings(env, key, value):
         del env[key]
     else:
         env[key] = value
+    if key == "TRANSMISSION_RPC_URL" and value is None:
+        assert (
+            Settings.load(env, env_file=None).transmission_rpc_url
+            == "http://127.0.0.1:9091/transmission/rpc"
+        )
+        return
     with pytest.raises(ConfigurationError, match=key):
         Settings.load(env, env_file=None)
 

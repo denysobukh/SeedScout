@@ -58,7 +58,7 @@ class Settings:
         allowed_ids = frozenset(int(item.strip()) for item in raw_ids)
         if any(user_id >= 2**52 for user_id in allowed_ids):
             raise ConfigurationError("TELEGRAM_ALLOWED_USER_IDS contains an out-of-range ID")
-        url = required("TRANSMISSION_RPC_URL")
+        url = values.get("TRANSMISSION_RPC_URL", "http://127.0.0.1:9091/transmission/rpc")
         try:
             parsed = urlsplit(url)
             valid_url = (

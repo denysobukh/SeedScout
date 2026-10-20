@@ -152,6 +152,9 @@ def _soup(response: _Response) -> BeautifulSoup:
 
 
 def _authenticated(page: BeautifulSoup) -> bool:
+    username = page.select_one("#logged-in-username")
+    if username is not None and username.get_text(strip=True):
+        return True
     return (
         page.select_one('a[href*="login.php?logout"], a[href*="login.php?mode=logout"]') is not None
     )
