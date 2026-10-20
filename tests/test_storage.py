@@ -273,3 +273,18 @@ def test_empty_results_and_off_event_loop_usage(state):
 def test_invalid_result_metadata(kwargs):
     with pytest.raises(ValueError):
         TorrentResult(**kwargs)
+
+
+def test_committed_selection_state_is_logged_without_worker_claim(state, caplog):
+    import json
+    import logging
+
+    store, _ = state
+    with caplog.at_level(logging.INFO):
+        item = claimed(store)
+        store.begin_submission(item.id, item.claim_token, "a" * 40)
+    events = [json.loads(record.message) for record in caplog.records]
+    assert [event["submission_status"] for event in events] == ["pending", "claimed", "submitting"]
+    assert all(event["user_id"] == 1 and event["chat_id"] == -2 for event in events)
+    assert all(event["topic_id"] == 123 for event in events)
+    assert item.claim_token not in caplog.text

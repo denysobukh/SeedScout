@@ -519,3 +519,88 @@ def test_authentication_reads_homepage_form_and_only_posts_to_login_endpoint():
         assert client.requests[1][2]["headers"]["Referer"] == "https://rutracker.org/"
 
     asyncio.run(run())
+
+
+def test_real_http_trace_logs_actual_headers_redirect_and_denied_response(monkeypatch, caplog):
+    import json
+    import logging
+    from urllib.parse import urljoin
+
+    from aiohttp import web
+
+    import tg_torrent_downloader.rutracker as module
+
+    async def run():
+        received = []
+
+        async def login(request):
+            received.append(dict(await request.post()))
+            response = web.Response(status=302, headers={"Location": "/target?sid=redirect-secret"})
+            response.set_cookie("session", "cookie-secret")
+            return response
+
+        async def target(request):
+            assert request.cookies.get("session") == "cookie-secret"
+            return web.Response(
+                status=403,
+                text="response-body-secret",
+                headers={
+                    "Set-Cookie": "session=response-cookie-secret",
+                    "X-Api-Key": "response-api-secret",
+                },
+            )
+
+        app = web.Application()
+        app.router.add_post("/login", login)
+        app.router.add_get("/target", target)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = runner.addresses[0][1]
+        base = f"http://localhost:{port}"
+        # Only this test redirects the constrained production transport to a local server.
+        monkeypatch.setattr(module, "_source_url", lambda value, base="": urljoin(base, value))
+        try:
+            async with RuTrackerClient("test", "unused", user_id=11, chat_id=22) as client:
+                client._state = "logging_in"
+                with pytest.raises(AccessDenied):
+                    await client._request(
+                        "POST",
+                        base + "/login",
+                        data=b"login_username=user-secret&login_password=password-secret&"
+                        b"cap_code_token-secret=captcha-secret&login=Submit",
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    )
+        finally:
+            await runner.cleanup()
+        assert received[0]["login_password"] == "password-secret"  # redaction never alters request
+
+    with caplog.at_level(logging.INFO, logger="tg_torrent_downloader.diagnostics"):
+        asyncio.run(run())
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "tg_torrent_downloader.diagnostics"
+    ]
+    requests = [event for event in events if event["event"] == "rutracker.request.headers"]
+    responses = [event for event in events if event["event"] == "rutracker.response"]
+    assert [event["method"] for event in requests] == ["POST", "GET"]
+    assert any(key.lower() == "content-length" for key, _ in requests[0]["headers"])
+    assert ["Cookie", "[REDACTED]"] in requests[1]["headers"]
+    assert [event["status"] for event in responses] == [302, 403]
+    assert len({event["request_id"] for event in requests + responses}) == 1
+    assert all(event["user_id"] == 11 and event["chat_id"] == 22 for event in events)
+    assert all(event["state"] == "logging_in" for event in events)
+    for secret in (
+        "user-secret",
+        "password-secret",
+        "token-secret",
+        "captcha-secret",
+        "redirect-secret",
+        "cookie-secret",
+        "response-cookie-secret",
+        "response-api-secret",
+        "response-body-secret",
+    ):
+        assert secret not in caplog.text

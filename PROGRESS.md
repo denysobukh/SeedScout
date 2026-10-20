@@ -9,8 +9,8 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 - Language: Python, approved by the user.
 - Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
 - Planning: specification, implementation plan, and progress file approved by the user.
-- Implementation: confirmed flow documentation committed as 70740e3. Step 3 approved by the user and included in its implementation commit.
-- Next action: implement step 4 (Transmission integration), then stop for user review before committing it. RuTracker authenticated verification remains limited by HTTP 403 on login POST.
+- Implementation: step 3 committed as 345d85d; diagnostic logging specification committed as 786035a. Diagnostic logging follow-up approved by the user and included in its implementation commit.
+- Next action: implement step 4 (Transmission integration), then stop for review before committing. RuTracker authenticated verification remains limited by HTTP 403 on login POST.
 - Live verification limitation: RuTracker homepage is accessible, but login POST returns HTTP 403. Implementation and offline tests are complete; authenticated compatibility remains unverified. Live Transmission submissions still require explicit test authorization.
 
 ## Step tracker
@@ -21,6 +21,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 1 | Python foundation and configuration | Approved; committed |
 | 2 | Durable workflow state | Approved; committed |
 | 3 | RuTracker integration | Approved; committed; live authenticated verification limited |
+| 3a | Diagnostic logging follow-up | Approved; committed |
 | 4 | Transmission integration | Not started |
 | 5 | Telegram search and selection | Not started |
 | 6 | Confirmed download and submission | Not started |
@@ -94,3 +95,15 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Updated SPECIFICATION.md with those requirements, response status, event correlation, configurable file path, rotation/retention, and redaction consistent with the existing no-secrets-in-logs requirement.
 - Specification only: current implementation still logs to stderr and has no HTTP/state diagnostic instrumentation. Implement file logging and RuTracker instrumentation in a follow-up change, then add user-input/state events with the Telegram workflow. Do not consider the new requirement implemented yet.
 - User approved committing this documentation change. No application behavior changed; diagnostic file logging remains to be implemented.
+
+## Diagnostic logging implementation review checkpoint
+
+- Added LOG_FILE, LOG_MAX_BYTES, and LOG_BACKUP_COUNT configuration, defaults .runtime/bot.log / 5242880 bytes / 3 backups, with validation and .env.example entries. No local .env changes.
+- Configured stderr plus private rotating UTF-8 file logging. Files and rotated backups are owner-only (0600); *.log.* is ignored alongside *.log. Startup file-open failures return a safe configuration error; write/rotation failures do not dump original records.
+- RuTracker request-start, actual-headers-sent, response, and network-error events include method, safe URL, POST form data, user/chat, request ID, redirect hop, and short state. Response headers/status are recorded before HTTP errors or redirects are handled. Never log response bodies or torrent bytes.
+- Sanitize headers and form/query fields before creating records, including Cookie/Set-Cookie/Authorization, login credentials, CAPTCHA answers and dynamic field names, challenge/session identifiers, and unknown values. Configured secret values are additionally redacted in both outputs, including JSON/URL-encoded variants.
+- Added client state summaries, search input logging, redacted CAPTCHA input logging, and a helper for remaining Telegram inputs. Added durable selection/submission state logging after successful database commits, excluding worker claim tokens.
+- Preserved --check-config without filesystem/network side effects; normal startup opens the log file. Added README configuration, lifecycle, retention, and limitations, and inserted this follow-up in the implementation plan.
+- Validation: 142 tests passed (22 new cases), Ruff lint/format checks passed, git diff whitespace check passed. Includes an actual aiohttp local-server test for outgoing auto headers, cookies, redirects and a 403 response; verifies secrets are absent and requests remain unchanged. Other tests cover rotation/retention, owner-only permissions, failure diagnostics, configuration validation, input redaction, and durable state events.
+- No external service calls, real credentials, or live torrent downloads/submissions were used for this follow-up. Tests use temporary logs and a local HTTP server. Live RuTracker login limitation is unchanged.
+- Review: approved by the user with the instruction to commit. Remaining Telegram command/numeric/button input logging will be wired in step 5, and live Transmission workflow remains steps 4/6. This change does not implement those handlers or claim full end-to-end logging coverage yet.

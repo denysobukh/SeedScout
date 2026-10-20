@@ -137,3 +137,36 @@ def test_invalid_environment_file_is_reported_without_content(env, tmp_path):
     with pytest.raises(ConfigurationError, match="Environment file") as exc:
         Settings.load(env, env_file=path)
     assert "private" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("LOG_FILE", ""),
+        ("LOG_FILE", "\x00"),
+        ("LOG_FILE", ".runtime/bot.db"),
+        ("LOG_MAX_BYTES", "0"),
+        ("LOG_MAX_BYTES", "-1"),
+        ("LOG_MAX_BYTES", "oops"),
+        ("LOG_MAX_BYTES", "1073741825"),
+        ("LOG_BACKUP_COUNT", "0"),
+        ("LOG_BACKUP_COUNT", "101"),
+        ("LOG_BACKUP_COUNT", "1.5"),
+    ],
+)
+def test_invalid_logging_configuration(env, key, value):
+    env[key] = value
+    with pytest.raises(ConfigurationError, match=key):
+        Settings.load(env, env_file=None)
+
+
+def test_logging_defaults_and_overrides(env, tmp_path):
+    defaults = Settings.load(env, env_file=None)
+    assert defaults.log_file.as_posix() == ".runtime/bot.log"
+    assert defaults.log_max_bytes == 5242880
+    assert defaults.log_backup_count == 3
+    env.update(LOG_FILE=str(tmp_path / "custom.log"), LOG_MAX_BYTES="1000", LOG_BACKUP_COUNT="2")
+    settings = Settings.load(env, env_file=None)
+    assert settings.log_file == tmp_path / "custom.log"
+    assert settings.log_max_bytes == 1000
+    assert settings.log_backup_count == 2

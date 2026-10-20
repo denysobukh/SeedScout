@@ -15,6 +15,7 @@ from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
+from tg_torrent_downloader.logging import log_state
 from tg_torrent_downloader.models import Search, Selection, SelectionStatus, TorrentResult
 
 
@@ -187,12 +188,21 @@ class WorkflowStore:
                     now,
                 ),
             )
-            return self._selection(
+            selection = self._selection(
                 db.execute(
                     "SELECT * FROM selections WHERE search_id=? AND position=?",
                     (search_id, position),
                 ).fetchone()
             )
+        log_state(
+            "selection",
+            user_id=selection.user_id,
+            chat_id=selection.chat_id,
+            topic_id=selection.result.topic_id,
+            selection_id=selection.id,
+            submission_status=selection.status,
+        )
+        return selection
 
     def get_selection(self, selection_id: str, user_id: int, chat_id: int) -> Selection:
         """Return owned history, including expired selections, without authorizing work."""
@@ -231,9 +241,18 @@ class WorkflowStore:
                     selection_id,
                 ),
             )
-            return self._selection(
+            selection = self._selection(
                 db.execute("SELECT * FROM selections WHERE id=?", (selection_id,)).fetchone()
             )
+        log_state(
+            "selection",
+            user_id=selection.user_id,
+            chat_id=selection.chat_id,
+            topic_id=selection.result.topic_id,
+            selection_id=selection.id,
+            submission_status=selection.status,
+        )
+        return selection
 
     def claim_confirmation(self, selection_id: str, user_id: int, chat_id: int) -> Selection:
         return self._user_transition(selection_id, user_id, chat_id, cancel=False)
@@ -273,9 +292,18 @@ class WorkflowStore:
                     selection_id,
                 ),
             )
-            return self._selection(
+            selection = self._selection(
                 db.execute("SELECT * FROM selections WHERE id=?", (selection_id,)).fetchone()
             )
+        log_state(
+            "selection",
+            user_id=selection.user_id,
+            chat_id=selection.chat_id,
+            topic_id=selection.result.topic_id,
+            selection_id=selection.id,
+            submission_status=selection.status,
+        )
+        return selection
 
     def begin_submission(self, selection_id: str, claim_token: str, info_hash: str) -> Selection:
         """Persist identity before add RPC, after retrieving and validating torrent bytes."""

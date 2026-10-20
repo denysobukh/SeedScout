@@ -6,6 +6,7 @@
 # Runtime state and downloaded torrent files
 *.torrent
 *.log
+*.log.*
 .runtime/
 tmp/
 

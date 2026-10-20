@@ -8,7 +8,8 @@ their saved query/topic after AuthenticationRequired and user-assisted login.
 import asyncio
 import re
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from uuid import uuid4
@@ -16,6 +17,14 @@ from uuid import uuid4
 import aiohttp
 from bs4 import BeautifulSoup, Tag
 
+from tg_torrent_downloader.logging import (
+    diagnostic_event,
+    log_state,
+    log_user_input,
+    safe_headers,
+    safe_post_data,
+    safe_url,
+)
 from tg_torrent_downloader.models import TorrentResult
 
 _ORIGIN = "https://rutracker.org"
@@ -327,15 +336,59 @@ class RuTrackerClient:
         self._session: aiohttp.ClientSession | None = None
         self._pending: _PendingCaptcha | None = None
         self._lock = asyncio.Lock()
+        self._state = "idle"
+        self._topic_id: int | None = None
 
     async def __aenter__(self) -> RuTrackerClient:
         if self._session is not None:
             raise RuntimeError("RuTracker client is already open")
+        trace = aiohttp.TraceConfig()
+        trace.on_request_headers_sent.append(self._headers_sent)
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=25, connect=10),
             headers={"User-Agent": "SeedScoutBot/0.1"},
+            trace_configs=[trace],
         )
         return self
+
+    def _set_state(self, state: str) -> None:
+        self._state = state
+        log_state(state, user_id=self._user_id, chat_id=self._chat_id, topic_id=self._topic_id)
+
+    @asynccontextmanager
+    async def _operation(self, stage: str, topic_id: int | None = None) -> AsyncIterator[None]:
+        async with self._lock:
+            self._topic_id = topic_id
+            self._set_state(stage)
+            try:
+                yield
+            except RuTrackerError as error:
+                diagnostic_event(
+                    "rutracker.error",
+                    user_id=self._user_id,
+                    chat_id=self._chat_id,
+                    state=self._state,
+                    topic_id=self._topic_id,
+                    error=type(error).__name__,
+                )
+                self._set_state("error")
+                raise
+
+    async def _headers_sent(self, session, context, params) -> None:
+        info = context.trace_request_ctx
+        diagnostic_event(
+            "rutracker.request.headers",
+            user_id=self._user_id,
+            chat_id=self._chat_id,
+            state=self._state,
+            topic_id=self._topic_id,
+            request_id=info["request_id"],
+            hop=info["hop"],
+            method=params.method,
+            url=safe_url(str(params.url)),
+            headers=safe_headers(params.headers.items()),
+            post_data=info["post_data"],
+        )
 
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
@@ -360,7 +413,21 @@ class RuTrackerClient:
             raise RuntimeError("Use RuTrackerClient as an async context manager")
         url = _source_url(url)
         # Follow only same-origin redirects, checking BEFORE each request (including credentials).
-        for _ in range(6):
+        request_id = uuid4().hex
+        for hop in range(6):
+            context = {"request_id": request_id, "hop": hop, "post_data": safe_post_data(data)}
+            diagnostic_event(
+                "rutracker.request.start",
+                user_id=self._user_id,
+                chat_id=self._chat_id,
+                state=self._state,
+                topic_id=self._topic_id,
+                request_id=request_id,
+                hop=hop,
+                method=method,
+                url=safe_url(url),
+                post_data=context["post_data"],
+            )
             try:
                 async with self._session.request(
                     method,
@@ -368,7 +435,19 @@ class RuTrackerClient:
                     data=data,
                     headers=headers,
                     allow_redirects=False,
+                    trace_request_ctx=context,
                 ) as response:
+                    diagnostic_event(
+                        "rutracker.response",
+                        user_id=self._user_id,
+                        chat_id=self._chat_id,
+                        state=self._state,
+                        topic_id=self._topic_id,
+                        request_id=request_id,
+                        hop=hop,
+                        status=response.status,
+                        headers=safe_headers(response.headers.items()),
+                    )
                     if response.status in {301, 302, 303, 307, 308}:
                         location = response.headers.get("Location")
                         if not location:
@@ -400,28 +479,41 @@ class RuTrackerClient:
                         if len(body) > limit:
                             raise UnexpectedPage("RuTracker response exceeded the allowed size")
                     return _Response(bytes(body), response.content_type, response.charset)
-            except aiohttp.ClientError, TimeoutError:
+            except (aiohttp.ClientError, TimeoutError) as error:
+                diagnostic_event(
+                    "rutracker.request.failed",
+                    user_id=self._user_id,
+                    chat_id=self._chat_id,
+                    state=self._state,
+                    request_id=request_id,
+                    hop=hop,
+                    error=type(error).__name__,
+                )
                 raise NetworkError("Could not reach RuTracker; retry the operation") from None
         raise UnexpectedPage("RuTracker returned too many redirects")
 
     async def check_authenticated(self) -> bool:
-        async with self._lock:
+        async with self._operation("checking_auth"):
             page = _soup(await self._request("GET", _HOME))
             if _authenticated(page):
+                self._set_state("authenticated")
                 return True
             if _login_form(page) is not None or page.select_one('a[href*="login.php"]'):
+                self._set_state("authentication_required")
                 return False
             raise UnexpectedPage("RuTracker session status could not be determined")
 
     async def ensure_authenticated(self) -> CaptchaChallenge | None:
         """Check server session first, then login, or return a pending user challenge."""
-        async with self._lock:
+        async with self._operation("checking_auth"):
             if self._pending is not None:
                 if self._pending.challenge.expires_at > self._clock():
+                    self._set_state("waiting_captcha")
                     return self._pending.challenge
                 self._pending = None
             page = _soup(await self._request("GET", _HOME))
             if _authenticated(page):
+                self._set_state("authenticated")
                 return None
             form = _login_form(page)
             if form is None:
@@ -448,11 +540,13 @@ class RuTrackerClient:
             self._clock() + 300,
         )
         self._pending = _PendingCaptcha(challenge, form)
+        self._set_state("waiting_captcha")
         return challenge
 
     async def _submit_login(
         self, form: _LoginForm, answer: str | None = None
     ) -> CaptchaChallenge | None:
+        self._set_state("logging_in")
         fields = dict(form.fields)
         fields.update(login_username=self._username, login_password=self._password)
         if form.captcha_field:
@@ -472,6 +566,7 @@ class RuTrackerClient:
         )
         page = _soup(response)
         if _authenticated(page):
+            self._set_state("authenticated")
             return None
         text = page.get_text(" ", strip=True).casefold()
         if re.search(r"(?:неверн|неправильн).{0,80}(?:парол|имя пользователя)", text) or (
@@ -507,18 +602,20 @@ class RuTrackerClient:
         user_id: int,
         chat_id: int,
     ) -> CaptchaChallenge | None:
-        async with self._lock:
+        async with self._operation("answering_captcha"):
             pending = self._owned_challenge(challenge_id, user_id, chat_id)
             if not answer.strip() or len(answer) > 128:
                 raise ValueError("CAPTCHA answer must contain 1–128 characters")
+            log_user_input(user_id, chat_id, answer, sensitive=True)
             # Consume once even if request outcome is unknown. Never replay a login POST.
             self._pending = None
             return await self._submit_login(pending.form, answer)
 
     async def cancel_captcha(self, challenge_id: str, *, user_id: int, chat_id: int) -> None:
-        async with self._lock:
+        async with self._operation("cancelling_captcha"):
             self._owned_challenge(challenge_id, user_id, chat_id)
             self._pending = None
+            self._set_state("captcha_cancelled")
 
     async def search(self, query: str) -> tuple[TorrentResult, ...]:
         if not query.strip():
@@ -528,17 +625,22 @@ class RuTrackerClient:
             params = urlencode({"nm": query}, encoding="windows-1251", errors="strict")
         except UnicodeError:
             raise ValueError("RuTracker search does not support some query characters") from None
-        async with self._lock:
-            return parse_search(await self._request("GET", _FORUM + "tracker.php?" + params))
+        async with self._operation("searching"):
+            log_user_input(self._user_id, self._chat_id, query)
+            results = parse_search(await self._request("GET", _FORUM + "tracker.php?" + params))
+            self._set_state("results_ready" if results else "no_results")
+            return results
 
     async def get_topic(self, result: TorrentResult) -> TopicDetails:
-        async with self._lock:
-            return parse_topic(await self._request("GET", result.topic_url), result)
+        async with self._operation("loading_topic", result.topic_id):
+            details = parse_topic(await self._request("GET", result.topic_url), result)
+            self._set_state("description_ready")
+            return details
 
     async def download_torrent(self, topic_id: int) -> bytes:
         """Only the confirmed workflow may call this method; description retrieval never does."""
         result = TorrentResult(topic_id, "Torrent")
-        async with self._lock:
+        async with self._operation("downloading_torrent", topic_id):
             response = await self._request(
                 "GET",
                 _FORUM + f"dl.php?t={result.topic_id}",
@@ -556,4 +658,5 @@ class RuTrackerClient:
             if not response.body.startswith(b"d") or not response.body.endswith(b"e"):
                 raise UnexpectedPage("RuTracker returned invalid torrent bytes")
             # Full bencode validation and info-hash derivation belong to step 4.
+            self._set_state("torrent_received")
             return response.body

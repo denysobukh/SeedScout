@@ -3,13 +3,11 @@ import subprocess
 import sys
 
 
-def run_cli(tmp_path, *args, configured=False):
+def run_cli(tmp_path, *args, configured=False, overrides=None):
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith(
-            ("TELEGRAM_", "RUTRACKER_", "TRANSMISSION_", "DATABASE_", "LOG_LEVEL")
-        )
+        if not key.startswith(("TELEGRAM_", "RUTRACKER_", "TRANSMISSION_", "DATABASE_", "LOG_"))
     }
     if configured:
         env.update(
@@ -21,6 +19,7 @@ def run_cli(tmp_path, *args, configured=False):
                 "TRANSMISSION_RPC_URL": "http://127.0.0.1:1/transmission/rpc",
             }
         )
+    env.update(overrides or {})
     return subprocess.run(
         [sys.executable, "-m", "tg_torrent_downloader", *args],
         cwd=tmp_path,
@@ -56,3 +55,21 @@ def test_default_command_is_honest_about_unimplemented_polling(tmp_path):
     result = run_cli(tmp_path, configured=True)
     assert result.returncode == 1
     assert "not implemented yet" in result.stderr
+
+
+def test_startup_creates_diagnostic_file(tmp_path):
+    result = run_cli(tmp_path, configured=True)
+    path = tmp_path / ".runtime" / "bot.log"
+    assert result.returncode == 1
+    assert "not implemented yet" in path.read_text()
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_logging_setup_failure_is_safe_and_actionable(tmp_path):
+    blocker = tmp_path / "file-instead-of-directory"
+    blocker.write_text("existing data")
+    result = run_cli(tmp_path, configured=True, overrides={"LOG_FILE": str(blocker / "bot.log")})
+    assert result.returncode == 2
+    assert "LOG_FILE could not be opened" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert blocker.read_text() == "existing data"

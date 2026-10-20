@@ -39,7 +39,7 @@ uv run --locked ruff format --check .
 
 `uv.lock` pins application, development, and transitive dependencies. Commit intentional dependency updates together with `pyproject.toml`. SQLite storage uses Python's standard library and requires no additional service.
 
-Logs go to stderr, redact configured credentials and common authentication headers, and suppress dependency debug logging. Never log request bodies, raw headers, cookies, or settings objects. `.env`, local databases, and temporary torrent files are ignored by Git.
+Logs go to stderr and a rotating UTF-8 diagnostic file (default `.runtime/bot.log`). HTTP headers and POST fields are sanitized before logging; configured credentials are also redacted during formatting. Dependency debug logging is suppressed. Never log raw headers, cookies, response bodies, or settings objects. `.env`, local databases, log files and their rotated backups, and temporary torrent files are ignored by Git.
 
 Read [PROGRESS.md](PROGRESS.md) when resuming work. Each implementation step requires user review before its commit.
 
@@ -66,3 +66,13 @@ After authentication, `search(query)` sends the original query as the `nm` searc
 `download_torrent(topic_id)` is a separate operation reserved for step 6 after explicit Download confirmation. It checks response type and basic torrent framing; full bencode validation and info-hash calculation belong to step 4. No live torrent retrieval has been performed.
 
 Live verification: homepage and `/forum/index.php` return HTTP 200 with the expected login form and Windows-1251 encoding. The login POST returns HTTP 403 in this environment, so successful authentication, actual CAPTCHA markup, and authenticated search/topic parsing still need live verification. Fixtures are synthetic examples, explicitly labeled in `tests/fixtures/rutracker/README.md`; passing them does not establish live compatibility.
+
+## Diagnostic logging
+
+Configure `LOG_FILE` (default `.runtime/bot.log`), `LOG_MAX_BYTES` (default `5242880`, 5 MiB), `LOG_BACKUP_COUNT` (default `3`), and `LOG_LEVEL` (default `INFO`). Parent directories are created on normal startup. The current file and up to three backups (`bot.log.1`, etc.) use owner-only permissions. Rotation occurs at the size threshold; a single oversized event can exceed it. Use a `.log` filename or an ignored runtime directory when choosing another path.
+
+Events have timestamps and JSON payloads. RuTracker diagnostics include user/chat IDs, a request ID and redirect hop, method, sanitized URL and POST fields, actual outgoing headers, and response status/headers, including redirects and denied responses. Header names and duplicate headers are retained; authentication and unknown header values are redacted. Common diagnostic headers such as Content-Type, Server, Date, and User-Agent remain readable. Only recognized nonsensitive form/query fields are preserved; passwords, cookies, session/challenge tokens, CAPTCHA answers, and unknown field values are redacted. Nonstandard URL paths are redacted because they may contain tokens. Response bodies and torrent bytes are never logged.
+
+Brief state events cover authentication, CAPTCHA, search, description retrieval, and torrent retrieval. SQLite selection/submission transitions are logged after commit with user/chat, selection ID, topic ID, and status, without worker claim tokens. Search queries and redacted CAPTCHA inputs are instrumented now; `log_user_input()` is ready for Telegram command, numeric input, and button handlers in step 5. Those handlers do not exist yet.
+
+`--check-config` remains an offline, side-effect-free validation command: it does not open a log file or verify filesystem write access. Normal startup reports a safe configuration error if the file cannot be opened. Later write/rotation failures report a fixed stderr message without dumping raw log records. File rotation assumes a single bot process writes the configured file.

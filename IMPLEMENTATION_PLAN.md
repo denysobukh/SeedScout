@@ -28,6 +28,10 @@ Follow RUTRACKER_FLOW.md. Inspect actual response formats and implement session 
 
 Validation: sanitized HTML fixtures and mocked HTTP tests for parsing, authentication, CAPTCHA renewal/expiry/ownership, top-10 ordering, full descriptions, and failures. Live read-only checks only when credentials and access are available; document any unverified assumptions.
 
+## Diagnostic logging follow-up (between steps 3 and 4)
+
+Implement the approved diagnostic logging requirements: configurable rotating file logs, sanitized RuTracker requests/responses, brief client and durable workflow state, and a user-input logging helper. Wire query/CAPTCHA events now and remaining Telegram inputs in step 5. Validate rotation, permissions, redaction, HTTP redirect/error diagnostics, and CLI behavior. Stop for review before committing.
+
 ## 4. Transmission integration
 
 Inspect the target Transmission version and support its RPC protocol. Implement session negotiation, optional authentication, torrent submission, duplicate detection, and torrent lookup by info hash. Validate torrent data and derive its identity before submission. Reconcile timeout outcomes before permitting retries. Support an optional download directory.

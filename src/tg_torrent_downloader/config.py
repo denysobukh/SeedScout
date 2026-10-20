@@ -26,6 +26,9 @@ class Settings:
     transmission_download_dir: str | None
     database_path: Path
     log_level: str
+    log_file: Path
+    log_max_bytes: int
+    log_backup_count: int
 
     @classmethod
     def load(
@@ -91,6 +94,21 @@ class Settings:
         path = Path(database).expanduser()
         if path.is_dir():
             raise ConfigurationError("DATABASE_PATH must be a file path")
+        log_file = values.get("LOG_FILE", ".runtime/bot.log")
+        if not log_file or not log_file.strip() or "\x00" in log_file:
+            raise ConfigurationError("LOG_FILE must be a file path")
+        log_path = Path(log_file).expanduser()
+        if log_path.is_dir() or log_path.is_symlink() or log_path.resolve() == path.resolve():
+            raise ConfigurationError("LOG_FILE must be a separate file path")
+
+        def positive_integer(key: str, default: str, maximum: int) -> int:
+            raw = values.get(key, default)
+            if not raw or not re.fullmatch(r"[0-9]{1,10}", raw) or not 1 <= int(raw) <= maximum:
+                raise ConfigurationError(
+                    f"{key} must be a positive integer within its allowed range"
+                )
+            return int(raw)
+
         return cls(
             telegram_bot_token=token,
             telegram_allowed_user_ids=allowed_ids,
@@ -102,6 +120,9 @@ class Settings:
             transmission_download_dir=values.get("TRANSMISSION_DOWNLOAD_DIR") or None,
             database_path=path,
             log_level=log_level,
+            log_file=log_path,
+            log_max_bytes=positive_integer("LOG_MAX_BYTES", "5242880", 1073741824),
+            log_backup_count=positive_integer("LOG_BACKUP_COUNT", "3", 100),
         )
 
     def secret_values(self) -> tuple[str, ...]:

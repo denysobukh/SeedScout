@@ -16,12 +16,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         settings = Settings.load()
+        if not args.check_config:
+            configure_logging(settings)
     except ConfigurationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
-    configure_logging(settings)
     if args.check_config:
-        logging.getLogger(__name__).info("Configuration is valid; no services contacted")
+        print("Configuration is valid; no services contacted", file=sys.stderr)
         return 0
     logging.getLogger(__name__).error(
         "Bot polling is not implemented yet. Use --check-config to validate this foundation."
