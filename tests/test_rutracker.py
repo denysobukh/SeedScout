@@ -17,6 +17,7 @@ from tg_torrent_downloader.rutracker import (
     RuTrackerClient,
     TopicUnavailable,
     UnexpectedPage,
+    UnrecognizedSearchResults,
     _Response,
     _source_url,
     parse_search,
@@ -646,3 +647,14 @@ def test_empty_logged_in_marker_is_not_authentication_evidence():
         assert await client.check_authenticated() is False
 
     asyncio.run(run())
+
+
+def test_unrecognizable_search_table_has_specific_recoverable_error():
+    with pytest.raises(UnrecognizedSearchResults):
+        parse_search(
+            _Response(
+                b'<table id="tor-tbl"><tr><td>Unsupported release</td></tr></table>',
+                "text/html",
+                "utf-8",
+            )
+        )

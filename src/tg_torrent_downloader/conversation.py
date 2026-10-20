@@ -29,13 +29,15 @@ from tg_torrent_downloader.rutracker import (
     RuTrackerClient,
     RuTrackerError,
     TopicUnavailable,
+    UnrecognizedSearchResults,
 )
 from tg_torrent_downloader.storage import Expired, StateError, WorkflowStore
 
 _HELP = (
     "Seed Scout\n/start — connect to RuTracker and begin a search\n"
     "/search — new search\n/cancel — cancel the current operation\n/help — this guide\n\n"
-    "Solve any login CAPTCHA, send your search query, then pick a result number. "
+    "Solve any login CAPTCHA, send your query, then choose a numbered button or type its number. "
+    "Send other text to search again. "
     "Back restores the same list. Downloads will be enabled in a later step."
 )
 _LABELS = {
@@ -125,15 +127,15 @@ class TelegramConversation:
     ) -> InlineKeyboardMarkup:
         conversation.token = uuid4().hex
         conversation.actions = actions
+        buttons = [
+            InlineKeyboardButton(
+                text=_LABELS.get(action, action.removeprefix("pick")),
+                callback_data=f"sc:{conversation.token}:{action}",
+            )
+            for action in actions
+        ]
         return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=_LABELS[action], callback_data=f"sc:{conversation.token}:{action}"
-                    )
-                    for action in actions
-                ]
-            ]
+            inline_keyboard=[buttons[i : i + 5] for i in range(0, len(buttons), 5)]
         )
 
     def _stage(self, conversation: Conversation, stage: str) -> None:
@@ -273,28 +275,33 @@ class TelegramConversation:
         elif c.stage == "query":
             c.query = text  # Preserve whitespace and punctuation exactly for RuTracker search.
             await self._search(c)
-        elif c.stage == "results":
-            search = await asyncio.to_thread(
-                self.store.get_search, c.search.id, c.user_id, c.chat_id
-            )
+        elif c.stage in {"results", "description"}:
+            number = text.strip()
             if (
-                not text.isascii()
-                or not text.isdigit()
-                or len(text) > 2
-                or not 1 <= int(text) <= len(search.results)
+                number.isascii()
+                and number.isdigit()
+                and len(number) <= 2
+                and 1 <= int(number) <= len(c.search.results)
             ):
-                await self._text(
-                    c.chat_id, f"Choose a result number from 1 to {len(search.results)}."
-                )
-                return
-            c.selected = await asyncio.to_thread(
-                self.store.select, search.id, int(text) - 1, c.user_id, c.chat_id
-            )
-            await self._topic(c)
+                await self._select_result(c, int(number) - 1)
+            else:
+                c.query, c.search, c.selected = text, None, None
+                await self._search(c)
+
         else:
             await self._text(
                 c.chat_id, "Use the buttons below the last response, or /search for a new search."
             )
+
+    async def _select_result(self, c: Conversation, position: int) -> None:
+        c.selected = await asyncio.to_thread(
+            self.store.select,
+            c.search.id,
+            position,
+            c.user_id,
+            c.chat_id,
+        )
+        await self._topic(c)
 
     async def handle_callback(self, callback: CallbackQuery) -> None:
         if callback.from_user.id not in self.allowed_users:
@@ -349,7 +356,9 @@ class TelegramConversation:
                 c.task = None
 
     async def _callback_action(self, c: Conversation, action: str) -> None:
-        if action == "new":
+        if action.startswith("pick"):
+            await self._select_result(c, int(action[4:]) - 1)
+        elif action == "new":
             c.query, c.search, c.selected = "", None, None
             await self._authenticate(c, "query")
         elif action == "back":
@@ -390,7 +399,12 @@ class TelegramConversation:
                 error=type(error).__name__,
                 resume=c.resume,
             )
-            if isinstance(error, (Expired, StateError)):
+            if isinstance(error, UnrecognizedSearchResults):
+                c.query, c.search, c.selected = "", None, None
+                c.token, c.actions = uuid4().hex, ()
+                self._stage(c, "query")
+                await self._text(c.chat_id, f"{error}. Send a new search query.")
+            elif isinstance(error, (Expired, StateError)):
                 await self._screen(
                     c,
                     "This search or selection is unavailable. Start a new search.",
@@ -500,7 +514,9 @@ class TelegramConversation:
                 + ("\n" + " · ".join(metadata) if metadata else "")
             )
         await self._screen(
-            c, "\n\n".join(lines) + f"\n\nSend a number from 1 to {len(lines)}.", ("new", "cancel")
+            c,
+            "\n\n".join(lines) + "\n\nChoose a numbered button or send a new search query.",
+            tuple(f"pick{index}" for index in range(1, len(lines) + 1)),
         )
 
     async def _topic(self, c: Conversation, *, reauthenticate: bool = True) -> None:

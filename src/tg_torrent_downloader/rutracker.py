@@ -58,6 +58,10 @@ class UnexpectedPage(RuTrackerError):
     pass
 
 
+class UnrecognizedSearchResults(UnexpectedPage):
+    """Search returned a table with no releases the client can recognize."""
+
+
 class AuthenticationRequired(RuTrackerError):
     pass
 
@@ -269,7 +273,7 @@ def parse_search(response: _Response) -> tuple[TorrentResult, ...]:
         if len(results) == 10:
             break
     if not results:
-        raise UnexpectedPage("RuTracker search table contains no recognizable releases")
+        raise UnrecognizedSearchResults("RuTracker search table contains no recognizable releases")
     return tuple(results)
 
 

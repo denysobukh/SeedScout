@@ -97,7 +97,7 @@ No Netscape cookie jar, User-Agent export, or rendered HTML file is written by d
 
 - `/start`: authenticate first, solve any CAPTCHA, then enter a query.
 - `/search` or New search: begin another search using the existing client session when valid.
-- Send a query unchanged, then choose a number from the first ten results. Each result includes its topic link and available size/seed count.
+- Send a query unchanged, then choose a numbered button from the first ten results (or type a valid displayed number). Results show only numeric buttons, up to five per row, matching the number of available torrents. Each result includes its topic link and available size/seed count. Any other nonempty text, including an out-of-range number, starts a new search unchanged; this also works while viewing a description. /cancel remains available.
 - A selection retrieves the full topic description. Back restores the same search results and numbering. Download is displayed but remains a placeholder until step 6, without claiming or downloading the torrent.
 - `/help` shows instructions. `/cancel` or Cancel interrupts active work, closes the client session, and cancels a pending selection when possible.
 
@@ -106,3 +106,5 @@ Access control runs before upstream operations. Conversation state and controls 
 Search snapshots and selections persist in SQLite. The active UI and browser/CAPTCHA session stay in memory and expire after 15 minutes of inactivity; idle sessions are cleaned periodically. Search selections also retain their original database expiry. After a restart, use `/start`; stale buttons never silently resume a download.
 
 Automated conversation tests use fake upstream services and an actual aiogram router dispatch check. A read-only Telegram getMe check verified the saved token belongs to @SeedScoutBot. A user-requested live Telegram run exposed an authentication-marker bug after /start. The bot was stopped, and the parser was fixed to recognize RuTracker's nonempty #logged-in-username marker. Live backend login/search/topic checks now pass; the fixed Telegram conversation and real CAPTCHA delivery still need a walkthrough. Polling remains stopped until explicitly started again.
+
+When RuTracker returns a search table with no recognizable releases, the error response has no inline buttons. The bot returns to query input: any nonempty text, including a number, becomes a fresh unchanged search string. Old controls are invalidated; commands remain available.

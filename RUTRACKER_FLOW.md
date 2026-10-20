@@ -26,17 +26,20 @@ The user approved this flow. Download is the explicit confirmation; no extra con
    - Nonempty input → 5. Empty input → remain at 4. Cancel → stop.
 5. **Search RuTracker**
    - Matches → 6. No matches → explain and return to 4.
+   - Search table has no recognizable releases → show the diagnostic message without buttons and return to 4. Every nonempty text input, including numbers, is then a new query unchanged; /start, /search, /help, and /cancel remain commands.
    - Session expired → 2–3, then retry 5 with the saved query.
    - Network error → Retry → 5, New search → 4, or Cancel → stop.
 6. **Display first 10 results**
    - Preserve source order; number results 1–10, or fewer when fewer exist.
    - Include title, size, and seed count when available.
-   - Valid result number → 7. Invalid number → explain the valid range, stay at 6.
-   - New search → 4. Cancel → stop. Pagination is deferred.
+   - Show only numbered result buttons, one for each displayed torrent, in rows of up to five; do not show New search or Cancel buttons on this screen.
+   - A numbered button or typed valid displayed result number → 7.
+   - Any other nonempty text, including an out-of-range number → 5 with that text as the new query unchanged.
+   - /search → 4. /cancel → stop. Pagination is deferred.
 7. **Open selected torrent topic**
    - Follow its stored RuTracker topic link; retrieve the full release description.
    - Show the description as safe text, retaining useful links, split across Telegram messages when needed; include the source link.
-   - Offer Download and Back → 8.
+   - Offer Download and Back → 8. Nonempty text that is not a valid displayed result number starts a new search → 5; a valid number opens that result → 7.
    - Topic unavailable → explain, return to 6.
    - Session expired → 2–3, then retry 7 with the saved topic.
    - Network error → offer Retry → 7 or Back → 6.

@@ -34,7 +34,7 @@ Implement the approved diagnostic logging requirements: configurable rotating fi
 
 ## 4. Telegram search and selection
 
-Implement long polling, /start, /help, access control, and the confirmed RUTRACKER_FLOW.md conversation: authentication before query, CAPTCHA images/answers, unchanged text queries, numbered top-10 results, numeric selection, full descriptions split as needed, and Download/Back actions. Download acts as confirmation; Back preserves results. Pagination is deferred. Bind all callbacks to stored user/chat state, reject stale callbacks, and escape external text for Telegram rendering. Keep upstream operations asynchronous.
+Implement long polling, /start, /help, access control, and the confirmed RUTRACKER_FLOW.md conversation: authentication before query, CAPTCHA images/answers, unchanged text queries, numbered top-10 results with matching numeric buttons (no New search/Cancel buttons on the results list), button or typed-number selection, other nonempty text as an unchanged new query, full descriptions split as needed, and Download/Back actions. Download acts as confirmation; Back preserves results. Pagination is deferred. Bind all callbacks to stored user/chat state, reject stale callbacks, and escape external text for Telegram rendering. Keep upstream operations asynchronous.
 
 Validation: handler tests covering authentication, CAPTCHA, search, numeric selection, description splitting, Back navigation, no results, ownership, cancellation, and expiry. This step displays confirmation controls but does not yet enable real submissions.
 

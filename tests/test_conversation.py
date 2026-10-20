@@ -16,6 +16,7 @@ from tg_torrent_downloader.rutracker import (
     NetworkError,
     TopicDetails,
     TopicUnavailable,
+    UnrecognizedSearchResults,
 )
 from tg_torrent_downloader.storage import WorkflowStore
 
@@ -238,12 +239,14 @@ def test_download_placeholder_does_not_claim_or_fetch_torrent(h):
 
 
 @pytest.mark.parametrize("number", ["0", "11", "-1", "text", "1.5", "١", "9" * 100])
-def test_invalid_result_numbers_do_not_open_topic(h, number):
+def test_other_result_inputs_become_unchanged_search_queries(h, number):
     async def run():
         await h.search()
         await h.send(number)
         assert not h.client.topics
-        assert "number from 1 to 10" in h.bot.messages[-1]["text"]
+        assert h.client.queries == ["ubuntu", number]
+        assert h.state.query == number
+        assert h.state.stage == "results"
 
     asyncio.run(run())
 
@@ -358,7 +361,7 @@ def test_unavailable_topic_returns_to_original_list(h):
 def test_callbacks_reject_wrong_user_chat_and_old_screen(h):
     async def run():
         await h.search()
-        old = h.button("New search")
+        old = h.button("1")
         await h.flow.handle_callback(callback(old, user_id=2))
         await h.flow.handle_callback(callback(old, chat_id=20))
         assert len(h.clients) == 1
@@ -483,7 +486,7 @@ def test_expired_download_and_idle_cleanup(h):
 def test_callback_reserves_operation_before_acknowledgement_yields(h):
     async def run():
         await h.search()
-        data = h.button("New search")
+        data = h.button("1")
         entered, release = asyncio.Event(), asyncio.Event()
         original = h.bot.answer_callback_query
 
@@ -500,7 +503,7 @@ def test_callback_reserves_operation_before_acknowledgement_yields(h):
         assert "Working" in h.bot.answers[-1]["text"]
         release.set()
         await first
-        assert h.client.ensure_calls == 2  # Initial auth plus exactly one new search.
+        assert len(h.client.topics) == 1  # Exactly one numeric-button selection.
 
     asyncio.run(run())
 
@@ -552,5 +555,66 @@ def test_cancel_marks_pending_selection_cancelled_and_closes_client(h):
         await h.click("Cancel")
         assert not h.flow.sessions and h.client.closed
         assert h.store.get_selection(selected.id, 1, 10).status == SelectionStatus.CANCELLED
+
+    asyncio.run(run())
+
+
+def test_results_have_only_one_numbered_button_per_displayed_torrent(h):
+    async def run():
+        h.next_client.results = h.next_client.results[:3]
+        await h.search()
+        markup = h.bot.messages[-1]["reply_markup"]
+        buttons = [button for row in markup.inline_keyboard for button in row]
+        assert [button.text for button in buttons] == ["1", "2", "3"]
+        assert all(len(button.callback_data.encode()) <= 64 for button in buttons)
+        await h.click("3")
+        assert h.client.topics[-1].topic_id == 3
+        assert h.state.stage == "description"
+
+    asyncio.run(run())
+
+
+def test_ten_result_buttons_are_arranged_in_two_rows(h):
+    async def run():
+        await h.search()
+        rows = h.bot.messages[-1]["reply_markup"].inline_keyboard
+        assert [[button.text for button in row] for row in rows] == [
+            ["1", "2", "3", "4", "5"],
+            ["6", "7", "8", "9", "10"],
+        ]
+
+    asyncio.run(run())
+
+
+def test_new_query_from_description_invalidates_previous_controls(h):
+    async def run():
+        await h.search()
+        await h.click("2")
+        old = h.button("Download")
+        await h.send("  a different release  ")
+        assert h.client.queries == ["ubuntu", "  a different release  "]
+        assert h.state.stage == "results" and h.state.selected is None
+        await h.flow.handle_callback(callback(old))
+        assert "expired" in h.bot.answers[-1]["text"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("query", ["a different title", "1", "11", "  query with spaces  "])
+def test_unrecognized_search_results_have_no_buttons_and_next_input_is_query(h, query):
+    async def run():
+        h.next_client.search_outcomes = [
+            UnrecognizedSearchResults("RuTracker search table contains no recognizable releases")
+        ]
+        await h.search("first query")
+        assert h.state.stage == "query"
+        assert h.bot.messages[-1]["reply_markup"] is None
+        assert h.state.actions == ()
+        assert "no recognizable releases" in h.bot.messages[-1]["text"]
+        assert h.state.search is None and h.state.selected is None
+        await h.send(query)
+        assert h.client.queries == ["first query", query]
+        assert not h.client.topics
+        assert h.state.stage == "results"
 
     asyncio.run(run())

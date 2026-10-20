@@ -9,9 +9,9 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 - Language: Python, approved by the user.
 - Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
 - Planning: specification, implementation plan, and progress file approved by the user.
-- Implementation: steps 1–3 and follow-ups committed (browser session e59a741; plan reorder a9b72ab). Step 4 Telegram conversation and authentication-marker fix approved by the user and included in this implementation commit.
-- Next action: step 5 (Transmission integration) has not started. Keep polling stopped unless the user requests another Telegram test. Backend login, session recheck, search, and topic extraction now pass live verification after the authentication-marker fix. The corrected Telegram conversation still needs retesting; polling remains stopped.
-- Live verification: Chrome obtained cf_clearance and aiohttp reused the imported cookies/User-Agent to fetch the login page successfully. A later live investigation also verified credential login, session recheck, search, and full topic extraction. CAPTCHA and the fixed Telegram interaction remain unverified. Live Transmission submissions still require explicit test authorization.
+- Implementation: step 4 committed as f77a3dd. User approved the numbered result button and button-free search-error updates for this commit.
+- Next action: step 5 (Transmission integration) has not started. Continue the user-requested local Telegram test as needed; do not implement or commit the next step without its review workflow.
+- Live verification: browser clearance transfer, credential login, session recheck, search, and full topic extraction passed. User reported the corrected Telegram flow working. CAPTCHA still needs live verification. Live Transmission submissions require explicit test authorization.
 
 ## Step tracker
 
@@ -150,3 +150,21 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Live verification after the fix: credential login recognized; repeated authentication check True; read-only Ubuntu search returned 10 results; selected topic description extracted (8708 characters). No torrent file retrieved or submitted, no Telegram polling/messages during the investigation, and no raw credentials/cookies/HTML saved or printed.
 - Validation: 83 focused RuTracker/conversation tests passed; full suite 189 tests passed; lint, formatting, and whitespace checks passed.
 - Updated README and fixture notes. User approved committing step 4 and this fix. Next testing action, only when requested: restart the bot for the user's Telegram walkthrough. Do not automatically restart polling.
+
+## Numbered result buttons update
+
+- User reported that the corrected Telegram flow works as expected and requested numeric result buttons instead of New search/Cancel on the results list, with other text treated as a new query.
+- Updated the specification, decision tree, implementation plan, and README. Results now show exactly 1–N buttons for the displayed torrents, in rows of at most five, preserving numbering and owner/screen token checks.
+- Numeric buttons and valid typed result numbers open the selected topic. Other nonempty text (including out-of-range numbers) starts a new search unchanged from results or descriptions. Commands, CAPTCHA answers, description navigation, and /cancel retain their dedicated behavior.
+- Added tests for small result lists, ten-button layout, numeric callback selection, out-of-range/string queries, invalidating old description controls, and updated concurrent/foreign callback tests for numeric buttons.
+- Validation: 36 focused conversation tests and all 192 regression tests passed; Ruff lint, formatting, and git diff whitespace checks passed. User approved committing this update.
+- The prior test process was no longer running when preparing the update. Started the updated local bot after validation for the ongoing user-requested Telegram test. Send /start to create fresh controls; previous screen tokens expire across restart. Included in the user-approved search interaction commit.
+
+## Unrecognized search results input update
+
+- User requested removal of buttons from the "RuTracker search table contains no recognizable releases" screen and treatment of subsequent text as a fresh search query.
+- Added a specific UnrecognizedSearchResults error, retaining compatibility with UnexpectedPage handling. The conversation clears obsolete search/selection state, invalidates previous controls, shows the diagnostic without markup, and returns to query input.
+- All nonempty text, including numbers, is searched unchanged in that state. Commands retain their existing behavior; other error categories keep their existing handling.
+- Updated specification, decision tree, and README. Added parser and conversation regressions for button-free recovery and text/numeric queries. User approved committing this update together with the numbered result buttons.
+
+- Final validation for button-free search-error recovery: all 197 tests passed; Ruff lint/format and whitespace checks passed. Started the updated local bot for the ongoing Telegram test. Send /start for fresh controls. Included in the user-approved search interaction commit.

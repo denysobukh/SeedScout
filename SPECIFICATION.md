@@ -9,7 +9,7 @@ Build a Telegram bot that finds torrents on rutracker.org for content requested 
 1. The bot checks its RuTracker session, authenticates if necessary, and asks the requesting user to solve any CAPTCHA before prompting for a query.
 2. The bot uses the user's query unchanged to search rutracker.org and shows the first 10 results in returned order, numbered 1–10 (or fewer when fewer matches exist).
 3. Each result includes its title, a link to the RuTracker topic, and available metadata useful for choosing a release, such as size, seed count, quality, language, and format. Missing metadata is omitted rather than invented.
-4. The user picks a result number. The bot opens its stored topic link and displays the full release description, split across Telegram messages as needed, with Download and Back actions. Download is explicit confirmation; Back restores the original results and numbering.
+4. The user picks a numbered result button (or types a valid displayed result number). The bot opens its stored topic link and displays the full release description, split across Telegram messages as needed, with Download and Back actions. Download is explicit confirmation; Back restores the original results and numbering.
 5. Only after confirmation, the bot downloads the selected topic's `.torrent` file from rutracker.org.
 6. The bot submits that torrent file to Transmission through its RPC interface.
 7. The bot reports whether Transmission accepted the torrent, including its name and identifier when available. Acceptance means the download was queued; it does not mean the content finished downloading.
@@ -22,7 +22,9 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 
 - Provide `/start` and `/help` commands explaining how to search and add a torrent.
 - Accept nonempty text queries and provide clear feedback for empty or unsupported input.
-- Accept result numbers as selection input. Provide Download and Back buttons on the description, and New search and Cancel actions. Initial results are limited to the top 10; pagination is deferred.
+- Show one numbered button per displayed result (1–10, or fewer), replacing New search and Cancel buttons on the results list. Arrange up to five numeric buttons per row.
+- Accept a numbered button or a typed valid displayed result number as selection input. Any other nonempty text on the results or description screen starts a new search using the original text unchanged, including out-of-range numbers. Recognized commands and CAPTCHA answers retain their dedicated behavior.
+- Provide Download and Back buttons on the description; /search and /cancel remain available. Initial results are limited to the top 10; pagination is deferred.
 - Keep search results and pending selections scoped to the requesting user and chat.
 - Prevent another user from confirming someone else's selection.
 - Expire stale selections and explain how to search again.
@@ -39,6 +41,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Preserve queries and selected topics across session reauthentication. Retrieve the full release description only after selection; opening a description must not download a torrent file.
 - Preserve the association between each displayed result, its topic, and the downloaded torrent file.
 - Handle no results, authentication failures, unavailable topics, network errors, and unexpected response formats with actionable messages.
+- If a search table contains no recognizable releases, show the diagnostic message without inline buttons and return to query input. Treat every subsequent nonempty text message, including numbers, as a new search string unchanged; commands retain their dedicated behavior.
 - Use bounded request timeouts and conservative retries; avoid excessive requests.
 
 ### Transmission integration
