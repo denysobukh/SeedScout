@@ -87,3 +87,10 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Fixtures are synthetic and explicitly labeled; auth markers, CAPTCHA markup, and authenticated search/topic selectors remain assumptions pending live verification. Do not claim successful live integration based on fixture tests.
 - Updated README.md, SPECIFICATION.md, and RUTRACKER_FLOW.md with homepage login behavior and limitations.
 - Review: approved by the user with the instruction to commit, including the homepage correction and documented live verification limitation. Telegram conversation remains step 5, Transmission client step 4, and Download orchestration step 6.
+
+## Diagnostic logging specification update
+
+- User requested a log file containing user inputs, RuTracker request headers and POST data, response headers, and brief bot state.
+- Updated SPECIFICATION.md with those requirements, response status, event correlation, configurable file path, rotation/retention, and redaction consistent with the existing no-secrets-in-logs requirement.
+- Specification only: current implementation still logs to stderr and has no HTTP/state diagnostic instrumentation. Implement file logging and RuTracker instrumentation in a follow-up change, then add user-input/state events with the Telegram workflow. Do not consider the new requirement implemented yet.
+- User approved committing this documentation change. No application behavior changed; diagnostic file logging remains to be implemented.

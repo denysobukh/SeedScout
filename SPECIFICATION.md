@@ -60,7 +60,12 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 ## Reliability and observability
 
 - Keep Telegram interaction responsive while search, download, and RPC operations run.
-- Log search, selection, confirmation, and submission outcomes with enough context to diagnose failures without logging secrets.
+- Write diagnostic events to a local log file with timestamps and user/chat or operation identifiers so related events can be traced.
+- Log user inputs, including search queries, result numbers, and button actions. Redact credentials, tokens, and CAPTCHA answers rather than recording their raw values.
+- For each RuTracker request, log the HTTP method, URL, request headers, and POST form data when present. For each response, log the HTTP status and response headers. Redact sensitive values in URLs, headers, and form fields, including passwords, usernames used for authentication, Authorization, Cookie, Set-Cookie, and session/CAPTCHA tokens.
+- Include a brief bot state summary with relevant events: current workflow stage, selected topic when present, and submission status when applicable. Avoid dumping complete state objects or binary data.
+- Log search, selection, confirmation, and submission outcomes, including safe error details. Response bodies are not required in the log.
+- Use a configurable log-file path with bounded rotation and retention. Keep log files out of Git.
 - Provide clear user-facing errors and allow retrying a failed operation without silently choosing another torrent.
 - A restarted bot must reject any pending selection it cannot safely restore and ask the user to search again.
 
@@ -75,6 +80,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Repeated confirmation and uncertain RPC outcomes do not create duplicate submissions.
 - Unauthorized users and users interacting with another user's buttons cannot trigger downloads.
 - RuTracker and Transmission failures produce useful messages without disclosing secrets.
+- The diagnostic log records user inputs, RuTracker request headers and POST data, response status and headers, and brief workflow state, with sensitive values redacted.
 
 ## Design principles
 
