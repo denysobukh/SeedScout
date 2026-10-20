@@ -1,0 +1,13 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Runtime state and downloaded torrent files
+*.torrent
+*.log
+.runtime/
+tmp/
+
+# Operating system files
+.DS_Store
