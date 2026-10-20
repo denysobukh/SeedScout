@@ -39,6 +39,9 @@ class ScriptedClient(RuTrackerClient):
         self.responses = list(responses)
         self.requests = []
 
+    async def _prepare_browser_session(self):
+        pass  # Browser verification and cookie handoff have separate tests.
+
     async def _request(self, method, url, **kwargs):
         self.requests.append((method, url, kwargs))
         response = self.responses.pop(0)
@@ -604,3 +607,19 @@ def test_real_http_trace_logs_actual_headers_redirect_and_denied_response(monkey
         "response-body-secret",
     ):
         assert secret not in caplog.text
+
+
+def test_denied_session_is_invalidated_without_replaying_request():
+    async def run():
+        client, session = client_with_transport([FakeResponse(403)])
+        client._browser_ready = True
+        client._browser_login_html = "stale login form"
+        with pytest.raises(AccessDenied):
+            await client._request(
+                "POST", "https://rutracker.org/forum/login.php", data=b"login=test"
+            )
+        assert not client._browser_ready
+        assert client._browser_login_html is None
+        assert len(session.requests) == 1
+
+    asyncio.run(run())

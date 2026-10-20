@@ -31,7 +31,10 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 ### RuTracker integration
 
 - Search rutracker.org and retrieve topic metadata and torrent files.
-- Check authentication on the homepage before asking for a query. Use its login form (`login_username`, `login_password`) and POST credentials to `/forum/login.php` when needed; do not depend on fetching the dedicated login page.
+- Before the first HTTP authentication check, use asynchronous Playwright with visible Google Chrome to visit `/forum/index.php`, let its JavaScript establish a session, then open `/forum/login.php`. Wait for visible username/password fields in `#login-form-full`, require a matching main-frame HTTP 200 response, and verify the final login URL.
+- Capture `cf_clearance`, other applicable RuTracker session cookies, and the browser's actual User-Agent. Reuse them together in the HTTP client, preserving cookie domain/path, secure/HttpOnly flags, and expiry. Keep browser contexts isolated per user/chat workflow.
+- Check authentication before asking for a query. If login is needed, use the rendered login form (`login_username`, `login_password`) and POST configured credentials to `/forum/login.php` with the imported browser session.
+- Reuse the session for later search, topic, and torrent requests. If access is denied, invalidate the browser session and require fresh browser verification on retry; never automatically replay a login POST. Keep cookies and rendered HTML in memory, out of logs and Git. Restart requires fresh verification.
 - When login requires CAPTCHA, deliver its image to the requesting user, submit their answer, and repeat with a refreshed image when necessary. Scope challenges and answers to that user and chat, expire challenges, and support cancellation.
 - Preserve queries and selected topics across session reauthentication. Retrieve the full release description only after selection; opening a description must not download a torrent file.
 - Preserve the association between each displayed result, its topic, and the downloaded torrent file.

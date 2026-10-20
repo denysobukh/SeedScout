@@ -26,3 +26,8 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+
+# Optional browser-session exports and rendered login pages
+.rutracker-cookies.txt
+.rutracker-user-agent.txt
+rutracker_login.html

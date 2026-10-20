@@ -11,12 +11,15 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from http.cookies import CookieError, SimpleCookie
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from uuid import uuid4
 
 import aiohttp
 from bs4 import BeautifulSoup, Tag
+from yarl import URL
 
+from tg_torrent_downloader.browser_session import BrowserSessionError, obtain_browser_session
 from tg_torrent_downloader.logging import (
     diagnostic_event,
     log_state,
@@ -155,7 +158,8 @@ def _authenticated(page: BeautifulSoup) -> bool:
 
 
 def _login_form(page: BeautifulSoup) -> _LoginForm | None:
-    username = page.select_one('input[name="login_username"]')
+    scope = page.select_one("#login-form-full") or page
+    username = scope.select_one('input[name="login_username"]')
     if username is None:
         return None
     form = username.find_parent("form")
@@ -336,20 +340,74 @@ class RuTrackerClient:
         self._session: aiohttp.ClientSession | None = None
         self._pending: _PendingCaptcha | None = None
         self._lock = asyncio.Lock()
+        self._browser_ready = False
+        self._browser_login_html: str | None = None
         self._state = "idle"
         self._topic_id: int | None = None
 
     async def __aenter__(self) -> RuTrackerClient:
         if self._session is not None:
             raise RuntimeError("RuTracker client is already open")
+        self._session = self._new_http_session()
+        return self
+
+    def _new_http_session(self, *, jar=None, user_agent="SeedScoutBot/0.1"):
         trace = aiohttp.TraceConfig()
         trace.on_request_headers_sent.append(self._headers_sent)
-        self._session = aiohttp.ClientSession(
+        return aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=25, connect=10),
-            headers={"User-Agent": "SeedScoutBot/0.1"},
+            headers={"User-Agent": user_agent},
+            cookie_jar=jar,
             trace_configs=[trace],
         )
-        return self
+
+    async def _prepare_browser_session(self) -> None:
+        if self._browser_ready:
+            return
+        if self._session is None:
+            raise RuntimeError("Open the RuTracker client before browser verification")
+        self._set_state("browser_verification")
+        try:
+            browser = await obtain_browser_session(user_id=self._user_id, chat_id=self._chat_id)
+        except BrowserSessionError as error:
+            raise AccessDenied(str(error)) from None
+        if not browser.user_agent or any(c in browser.user_agent for c in "\r\n"):
+            raise UnexpectedPage("Chrome returned an invalid User-Agent")
+        jar = aiohttp.CookieJar()
+        for cookie in browser.cookies:
+            if cookie.domain.lstrip(".") != "rutracker.org" or not cookie.path.startswith("/"):
+                raise UnexpectedPage("Chrome returned an invalid RuTracker cookie scope")
+            if cookie.expires >= 0 and cookie.expires <= self._clock():
+                continue
+            morsels = SimpleCookie()
+            try:
+                morsels[cookie.name] = cookie.value
+            except CookieError:
+                raise UnexpectedPage("Chrome returned an invalid cookie") from None
+            morsel = morsels[cookie.name]
+            morsel["path"] = cookie.path
+            if cookie.domain.startswith("."):
+                morsel["domain"] = cookie.domain
+            morsel["secure"] = cookie.secure
+            morsel["httponly"] = cookie.http_only
+            if cookie.expires > 0:
+                morsel["max-age"] = str(max(1, int(cookie.expires - self._clock())))
+            jar.update_cookies(morsels, response_url=URL("https://rutracker.org" + cookie.path))
+        if "cf_clearance" not in jar.filter_cookies(URL("https://rutracker.org/forum/login.php")):
+            raise UnexpectedPage("Chrome clearance is missing or expired; verify again")
+        # Install the prepared jar intact, retaining host-only scope and absolute expiry.
+        replacement = self._new_http_session(jar=jar, user_agent=browser.user_agent)
+        await self._session.close()
+        self._session = replacement
+        self._browser_login_html = browser.login_html
+        self._browser_ready = True
+        diagnostic_event(
+            "rutracker.browser.imported",
+            user_id=self._user_id,
+            chat_id=self._chat_id,
+            state="browser_ready",
+            cookie_count=len(browser.cookies),
+        )
 
     def _set_state(self, state: str) -> None:
         self._state = state
@@ -396,6 +454,8 @@ class RuTrackerClient:
     async def close(self) -> None:
         async with self._lock:
             self._pending = None
+            self._browser_ready = False
+            self._browser_login_html = None
             if self._session is not None:
                 await self._session.close()
                 self._session = None
@@ -462,6 +522,9 @@ class RuTrackerClient:
                             method, data, headers = "GET", None, None
                         continue
                     if response.status in {401, 403}:
+                        self._browser_ready = False
+                        self._browser_login_html = None
+                        self._pending = None
                         raise AccessDenied(
                             "RuTracker denied access; retry later or check connectivity"
                         )
@@ -494,8 +557,10 @@ class RuTrackerClient:
 
     async def check_authenticated(self) -> bool:
         async with self._operation("checking_auth"):
+            await self._prepare_browser_session()
             page = _soup(await self._request("GET", _HOME))
             if _authenticated(page):
+                self._browser_login_html = None
                 self._set_state("authenticated")
                 return True
             if _login_form(page) is not None or page.select_one('a[href*="login.php"]'):
@@ -511,11 +576,19 @@ class RuTrackerClient:
                     self._set_state("waiting_captcha")
                     return self._pending.challenge
                 self._pending = None
+            await self._prepare_browser_session()
             page = _soup(await self._request("GET", _HOME))
             if _authenticated(page):
+                self._browser_login_html = None
                 self._set_state("authenticated")
                 return None
-            form = _login_form(page)
+            login = page
+            if self._browser_login_html is not None:
+                login = _soup(
+                    _Response(self._browser_login_html.encode("utf-8"), "text/html", "utf-8")
+                )
+                self._browser_login_html = None
+            form = _login_form(login)
             if form is None:
                 raise UnexpectedPage("RuTracker login form was not found")
             if form.captcha_field:

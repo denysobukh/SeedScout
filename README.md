@@ -55,7 +55,7 @@ The workflow is `pending → claimed → submitting → accepted/duplicate`, wit
 
 ## RuTracker client
 
-`RuTrackerClient` is an asynchronous context manager bound to one Telegram user/chat workflow. It owns a cookie session and serializes its requests. `ensure_authenticated()` reads the homepage form and either completes login or returns a `CaptchaChallenge`. It never fetches the dedicated login page; credentials are posted to `/forum/login.php`.
+`RuTrackerClient` is an asynchronous context manager bound to one Telegram user/chat workflow. It owns a cookie session and serializes its requests. `ensure_authenticated()` first establishes a browser session through asynchronous Playwright and visible Google Chrome. Chrome loads `/forum/index.php`, then `/forum/login.php`; a matching HTTP 200 and visible `#login-form-full` username/password fields are required. The client imports `cf_clearance`, applicable session cookies, and the exact browser User-Agent, then checks authentication and either completes login or returns a `CaptchaChallenge`. Credentials are posted through the HTTP client using the rendered form and imported session.
 
 The future Telegram handlers deliver `challenge.image` and collect an answer. `answer_captcha()` requires the challenge ID and matching user/chat IDs, and returns either successful authentication or a new challenge. Challenges expire after five minutes, can be cancelled, and are consumed once. Cookies, CAPTCHA fields, and images remain in memory; a restart requires fresh authentication. The client does not log credentials, answers, or response bodies.
 
@@ -65,7 +65,7 @@ After authentication, `search(query)` sends the original query as the `nm` searc
 
 `download_torrent(topic_id)` is a separate operation reserved for step 6 after explicit Download confirmation. It checks response type and basic torrent framing; full bencode validation and info-hash calculation belong to step 4. No live torrent retrieval has been performed.
 
-Live verification: homepage and `/forum/index.php` return HTTP 200 with the expected login form and Windows-1251 encoding. The login POST returns HTTP 403 in this environment, so successful authentication, actual CAPTCHA markup, and authenticated search/topic parsing still need live verification. Fixtures are synthetic examples, explicitly labeled in `tests/fixtures/rutracker/README.md`; passing them does not establish live compatibility.
+Live verification: a visible-Chrome run obtained `cf_clearance`, verified the full login form, and successfully reused the cookies/User-Agent to fetch `/forum/login.php` through aiohttp (HTTP 200). No credentials were submitted in that check; actual login, CAPTCHA, and authenticated search/topic parsing still need live verification. Earlier direct HTTP login attempts without browser clearance received HTTP 403. Fixtures are synthetic examples, explicitly labeled in `tests/fixtures/rutracker/README.md`; passing them does not establish live compatibility.
 
 ## Diagnostic logging
 
@@ -76,3 +76,11 @@ Events have timestamps and JSON payloads. RuTracker diagnostics include user/cha
 Brief state events cover authentication, CAPTCHA, search, description retrieval, and torrent retrieval. SQLite selection/submission transitions are logged after commit with user/chat, selection ID, topic ID, and status, without worker claim tokens. Search queries and redacted CAPTCHA inputs are instrumented now; `log_user_input()` is ready for Telegram command, numeric input, and button handlers in step 5. Those handlers do not exist yet.
 
 `--check-config` remains an offline, side-effect-free validation command: it does not open a log file or verify filesystem write access. Normal startup reports a safe configuration error if the file cannot be opened. Later write/rotation failures report a fixed stderr message without dumping raw log records. File rotation assumes a single bot process writes the configured file.
+
+## Browser session prerequisite
+
+Install Google Chrome on the machine that runs the bot and provide an active graphical desktop. `uv sync --locked` installs the Python Playwright dependency; this implementation uses the installed `chrome` channel, so it does not download another browser. Initial or renewed session acquisition opens a visible window and may need local browser verification. This prerequisite must be considered for eventual server deployment.
+
+Cookies retain their domain/path, secure/HttpOnly flags, and expiry in the HTTP cookie jar. The same browser User-Agent is used for subsequent requests. Cookies, rendered login HTML, and CAPTCHA state remain in memory, isolated per user/chat client. Browser contexts close after capture, and HTTP sessions close on client exit. Missing/expired clearance or a later access denial requires fresh browser verification; failed POSTs are not replayed automatically. This replaces the earlier homepage-only login approach.
+
+No Netscape cookie jar, User-Agent export, or rendered HTML file is written by default. The example artifact names `.rutracker-cookies.txt`, `.rutracker-user-agent.txt`, and `rutracker_login.html` are ignored as a precaution if used during manual diagnostics. Browser document request/response headers use the same sanitization as other diagnostics; session values and HTML are never logged.

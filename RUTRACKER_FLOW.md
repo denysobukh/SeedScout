@@ -2,14 +2,18 @@
 
 The user approved this flow. Download is the explicit confirmation; no extra confirmation screen is required.
 
-1. **Check authentication** by fetching the homepage (`https://rutracker.org/`)
-   - Valid session → 4.
-   - Missing or expired session → 2.
-2. **Attempt login** using the homepage form (`login_username`, `login_password`), posting configured credentials to `/forum/login.php`. Do not GET the dedicated login page.
+1. **Establish browser session and check authentication**
+   - If no verified browser session exists, use async Playwright to launch visible Google Chrome in an isolated context. Load `/forum/index.php` with JavaScript, then `/forum/login.php`.
+   - Wait for visible username/password fields in `#login-form-full`; require a matching main-frame HTTP 200 response and final login URL.
+   - Import `cf_clearance`, applicable session cookies, and Chrome's actual User-Agent into the HTTP client. Preserve cookie scope, flags, and expiry; retain them in memory for later requests.
+   - Check the server's authenticated state using the imported session. Valid session → 4; login needed → 2.
+   - Browser verification fails or clearance is absent/expired → offer Retry → 1 or Cancel → stop.
+2. **Attempt login** using the rendered login form (`login_username`, `login_password`), POSTing configured credentials to `/forum/login.php` with the browser cookies and matching User-Agent.
    - Successful → 4 (or resume the operation interrupted by expiry).
    - CAPTCHA required → 3.
    - Invalid credentials → explain the error and stop.
    - Network error → offer Retry → 1, or Cancel → stop.
+   - HTTP access denied → invalidate the browser session; Retry → 1 to obtain fresh clearance. Do not automatically replay the POST.
 3. **Resolve CAPTCHA**
    - Send its image to the requesting Telegram user and ask for the answer.
    - Submit the answer with the login form.

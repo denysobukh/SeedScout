@@ -9,9 +9,9 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 - Language: Python, approved by the user.
 - Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
 - Planning: specification, implementation plan, and progress file approved by the user.
-- Implementation: step 3 committed as 345d85d; diagnostic logging specification committed as 786035a. Diagnostic logging follow-up approved by the user and included in its implementation commit.
-- Next action: implement step 4 (Transmission integration), then stop for review before committing. RuTracker authenticated verification remains limited by HTTP 403 on login POST.
-- Live verification limitation: RuTracker homepage is accessible, but login POST returns HTTP 403. Implementation and offline tests are complete; authenticated compatibility remains unverified. Live Transmission submissions still require explicit test authorization.
+- Implementation: step 3 committed as 345d85d; diagnostic logging specification committed as 786035a. Diagnostic logging committed as 07f5f91. Browser-session login update approved by the user and included in its implementation commit.
+- Next action: implement step 4 (Transmission integration), then stop for review before committing. Actual credential login and authenticated RuTracker operations still need live verification.
+- Live verification: Chrome obtained cf_clearance and aiohttp reused the imported cookies/User-Agent to fetch the login page successfully. Actual login and authenticated search/topic behavior remain unverified. Live Transmission submissions still require explicit test authorization.
 
 ## Step tracker
 
@@ -22,6 +22,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 2 | Durable workflow state | Approved; committed |
 | 3 | RuTracker integration | Approved; committed; live authenticated verification limited |
 | 3a | Diagnostic logging follow-up | Approved; committed |
+| 3b | Playwright browser-session login | Approved; committed |
 | 4 | Transmission integration | Not started |
 | 5 | Telegram search and selection | Not started |
 | 6 | Confirmed download and submission | Not started |
@@ -107,3 +108,15 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Validation: 142 tests passed (22 new cases), Ruff lint/format checks passed, git diff whitespace check passed. Includes an actual aiohttp local-server test for outgoing auto headers, cookies, redirects and a 403 response; verifies secrets are absent and requests remain unchanged. Other tests cover rotation/retention, owner-only permissions, failure diagnostics, configuration validation, input redaction, and durable state events.
 - No external service calls, real credentials, or live torrent downloads/submissions were used for this follow-up. Tests use temporary logs and a local HTTP server. Live RuTracker login limitation is unchanged.
 - Review: approved by the user with the instruction to commit. Remaining Telegram command/numeric/button input logging will be wired in step 5, and live Transmission workflow remains steps 4/6. This change does not implement those handlers or claim full end-to-end logging coverage yet.
+
+## Playwright browser-session login review checkpoint
+
+- User requested Playwright session acquisition following the supplied visible-Chrome example. This supersedes the earlier homepage-only login approach.
+- Added async browser_session.py: launch installed Chrome visibly with the supplied options, visit /forum/index.php then /forum/login.php, wait for #login-form-full fields, verify final URL and matching main-frame HTTP 200, capture cf_clearance and applicable session cookies with browser User-Agent, and close the browser.
+- Imported cookies into a fresh aiohttp cookie jar, preserving host-only/domain scope, path, secure/HttpOnly flags, and expiry. Reuse the matching User-Agent for subsequent HTTP operations. Prefer the rendered full login form for the initial POST; preserve server-side CAPTCHA behavior.
+- Invalid/missing/expired clearance is rejected. Later HTTP 401/403 invalidates the browser session for renewal on explicit retry, without automatic login POST replay. Sessions/HTML remain in memory; no session files are exported.
+- Added Playwright to pyproject.toml and uv.lock (resolved 1.64.0), plus local-artifact ignore rules. Google Chrome is already installed locally; no new browser binary or global package was installed.
+- Live check: visible Chrome acquired cf_clearance and the verified login form; aiohttp reused its cookie jar and User-Agent to fetch /forum/login.php successfully (HTTP 200, 11095 response bytes). No credentials were submitted, no cookies printed, no torrent files retrieved, and no session artifacts saved.
+- Automated validation: 153 tests passed (11 new cases), Ruff lint and formatting passed. Tests cover browser status/URL/form checks, missing clearance, timeouts and cleanup, scoped cookie/User-Agent transfer, expired clearance, rendered-form login, no POST on browser failure, and denied-session invalidation. Most browser failure tests use a fake Playwright API; the live check confirms real browser capture and HTTP reuse.
+- Updated specification, decision tree, implementation plan, and README. Deployment now requires installed Google Chrome and an active graphical session. Actual credential login/CAPTCHA/search remain unverified by this update; earlier direct-HTTP 403 attempts are historical.
+- Review: user approved the browser-session login update and requested documentation updates and commit. Next numbered step is 4; it has not started.
