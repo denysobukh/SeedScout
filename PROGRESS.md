@@ -7,10 +7,10 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 ## Current checkpoint
 
 - Language: Python, approved by the user.
-- Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf.
+- Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
 - Planning: specification, implementation plan, and progress file approved by the user.
-- Implementation: step 2 approved by the user and included in its implementation commit.
-- Next action: implement step 3 (RuTracker integration), then stop for user review before committing it.
+- Implementation: step 2 committed. User approved the detailed RuTracker flow and authorized its documentation commit followed by step 3 implementation.
+- Next action: implement step 3 against RUTRACKER_FLOW.md, validate, and stop for review before its implementation commit.
 - Blocking requirements: none for step 2. Live service checks later require credentials; live torrent submissions require explicit test authorization.
 
 ## Step tracker
@@ -66,3 +66,9 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Expected limitation: recovery lookup and live submissions are implemented in later steps; this storage layer records state and enforces transitions only. Runtime startup wiring remains deferred to the bot orchestration steps.
 
 - Specification update: user requested SOLID and KISS guidelines; added practical design principles to SPECIFICATION.md. Included with the approved step 2 commit.
+
+## Confirmed flow update
+
+- User approved authentication before query, user-solved CAPTCHA, unchanged queries, numbered first 10 results, full descriptions, and Download/Back navigation.
+- Added RUTRACKER_FLOW.md; aligned the specification and steps 3, 5, and 6. Pagination is deferred; Download is explicit confirmation.
+- User explicitly authorized committing these documentation changes before implementing step 3.

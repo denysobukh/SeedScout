@@ -24,9 +24,9 @@ Validation: meaningful tests for ownership, expiry, concurrent confirmation, and
 
 ## 3. RuTracker integration
 
-Inspect actual response formats and implement authenticated sessions, search pagination, topic details, and torrent file retrieval. Handle character encoding, expired sessions, no results, unavailable topics, timeouts, and unexpected HTML. Keep source URLs constrained to RuTracker. Download torrent bytes only through a separately invoked method after confirmation.
+Follow RUTRACKER_FLOW.md. Inspect actual response formats and implement session checks, login, user/chat-scoped CAPTCHA challenges and answers, the first 10 search results in source order, full topic descriptions, and separate torrent file retrieval. Handle character encoding, expired sessions, no results, unavailable topics, timeouts, and unexpected HTML. Keep source URLs constrained to RuTracker. Download torrent bytes only through a separately invoked method after confirmation.
 
-Validation: sanitized HTML fixtures and mocked HTTP tests for parsing, authentication, pagination, and failures. Live read-only checks only when credentials and access are available; document any unverified assumptions.
+Validation: sanitized HTML fixtures and mocked HTTP tests for parsing, authentication, CAPTCHA renewal/expiry/ownership, top-10 ordering, full descriptions, and failures. Live read-only checks only when credentials and access are available; document any unverified assumptions.
 
 ## 4. Transmission integration
 
@@ -36,13 +36,13 @@ Validation: mocked RPC tests for acceptance, duplicates, session negotiation, fa
 
 ## 5. Telegram search and selection
 
-Implement long polling, /start, /help, access control, text search, paginated result buttons, release details, and Confirm/Cancel buttons. Bind all callbacks to stored user/chat state, reject stale callbacks, and escape external text for Telegram rendering. Keep upstream operations asynchronous.
+Implement long polling, /start, /help, access control, and the confirmed RUTRACKER_FLOW.md conversation: authentication before query, CAPTCHA images/answers, unchanged text queries, numbered top-10 results, numeric selection, full descriptions split as needed, and Download/Back actions. Download acts as confirmation; Back preserves results. Pagination is deferred. Bind all callbacks to stored user/chat state, reject stale callbacks, and escape external text for Telegram rendering. Keep upstream operations asynchronous.
 
-Validation: handler tests covering search, pagination, no results, ownership, cancellation, and expiry. This step displays confirmation controls but does not yet enable real submissions.
+Validation: handler tests covering authentication, CAPTCHA, search, numeric selection, description splitting, Back navigation, no results, ownership, cancellation, and expiry. This step displays confirmation controls but does not yet enable real submissions.
 
 ## 6. Confirmed download and submission workflow
 
-Wire confirmation to the atomic state transition, RuTracker torrent retrieval, and Transmission submission. Report accepted, duplicate, failed, and uncertain outcomes accurately. Reconcile interrupted submissions on restart, handle repeated button clicks, and clean up temporary data. Ensure cancellation and unconfirmed selections never fetch torrent files or submit tasks.
+Wire the Download action (explicit confirmation) to the atomic state transition, RuTracker torrent retrieval, and Transmission submission. Report accepted, duplicate, failed, and uncertain outcomes accurately. Reconcile interrupted submissions on restart, handle repeated button clicks, and clean up temporary data. Ensure cancellation and unconfirmed selections never fetch torrent files or submit tasks.
 
 Validation: integration tests with fake upstream services covering the full workflow, concurrent clicks, restarts, and ambiguous RPC outcomes.
 

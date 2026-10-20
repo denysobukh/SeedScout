@@ -6,13 +6,15 @@ Build a Telegram bot that finds torrents on rutracker.org for content requested 
 
 ## Core workflow
 
-1. The user sends a content request to the Telegram bot, such as a movie title, series, album, or other search query.
-2. The bot searches rutracker.org and returns a paginated list of matching torrents.
+1. The bot checks its RuTracker session, authenticates if necessary, and asks the requesting user to solve any CAPTCHA before prompting for a query.
+2. The bot uses the user's query unchanged to search rutracker.org and shows the first 10 results in returned order, numbered 1–10 (or fewer when fewer matches exist).
 3. Each result includes its title, a link to the RuTracker topic, and available metadata useful for choosing a release, such as size, seed count, quality, language, and format. Missing metadata is omitted rather than invented.
-4. The user selects a specific result. The bot displays its details and asks for explicit confirmation, with Confirm and Cancel actions.
+4. The user picks a result number. The bot opens its stored topic link and displays the full release description, split across Telegram messages as needed, with Download and Back actions. Download is explicit confirmation; Back restores the original results and numbering.
 5. Only after confirmation, the bot downloads the selected topic's `.torrent` file from rutracker.org.
 6. The bot submits that torrent file to Transmission through its RPC interface.
 7. The bot reports whether Transmission accepted the torrent, including its name and identifier when available. Acceptance means the download was queued; it does not mean the content finished downloading.
+
+See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and retry destinations.
 
 ## Functional requirements
 
@@ -20,7 +22,7 @@ Build a Telegram bot that finds torrents on rutracker.org for content requested 
 
 - Provide `/start` and `/help` commands explaining how to search and add a torrent.
 - Accept nonempty text queries and provide clear feedback for empty or unsupported input.
-- Use buttons for result pagination, selection, confirmation, and cancellation.
+- Accept result numbers as selection input. Provide Download and Back buttons on the description, and New search and Cancel actions. Initial results are limited to the top 10; pagination is deferred.
 - Keep search results and pending selections scoped to the requesting user and chat.
 - Prevent another user from confirming someone else's selection.
 - Expire stale selections and explain how to search again.
@@ -29,7 +31,9 @@ Build a Telegram bot that finds torrents on rutracker.org for content requested 
 ### RuTracker integration
 
 - Search rutracker.org and retrieve topic metadata and torrent files.
-- Support authenticated access where required, using configured credentials and session handling.
+- Check authentication before asking for a query; log in with configured credentials when needed.
+- When login requires CAPTCHA, deliver its image to the requesting user, submit their answer, and repeat with a refreshed image when necessary. Scope challenges and answers to that user and chat, expire challenges, and support cancellation.
+- Preserve queries and selected topics across session reauthentication. Retrieve the full release description only after selection; opening a description must not download a torrent file.
 - Preserve the association between each displayed result, its topic, and the downloaded torrent file.
 - Handle no results, authentication failures, unavailable topics, network errors, and unexpected response formats with actionable messages.
 - Use bounded request timeouts and conservative retries; avoid excessive requests.
