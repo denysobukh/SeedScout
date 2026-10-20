@@ -30,19 +30,19 @@ Validation: sanitized HTML fixtures and mocked HTTP tests for parsing, authentic
 
 ## Diagnostic logging follow-up (between steps 3 and 4)
 
-Implement the approved diagnostic logging requirements: configurable rotating file logs, sanitized RuTracker requests/responses, brief client and durable workflow state, and a user-input logging helper. Wire query/CAPTCHA events now and remaining Telegram inputs in step 5. Validate rotation, permissions, redaction, HTTP redirect/error diagnostics, and CLI behavior. Stop for review before committing.
+Implement the approved diagnostic logging requirements: configurable rotating file logs, sanitized RuTracker requests/responses, brief client and durable workflow state, and a user-input logging helper. Wire query/CAPTCHA events now and remaining Telegram inputs in step 4. Validate rotation, permissions, redaction, HTTP redirect/error diagnostics, and CLI behavior. Stop for review before committing.
 
-## 4. Transmission integration
-
-Inspect the target Transmission version and support its RPC protocol. Implement session negotiation, optional authentication, torrent submission, duplicate detection, and torrent lookup by info hash. Validate torrent data and derive its identity before submission. Reconcile timeout outcomes before permitting retries. Support an optional download directory.
-
-Validation: mocked RPC tests for acceptance, duplicates, session negotiation, failures, and timeout reconciliation. Any live submission requires explicit test authorization.
-
-## 5. Telegram search and selection
+## 4. Telegram search and selection
 
 Implement long polling, /start, /help, access control, and the confirmed RUTRACKER_FLOW.md conversation: authentication before query, CAPTCHA images/answers, unchanged text queries, numbered top-10 results, numeric selection, full descriptions split as needed, and Download/Back actions. Download acts as confirmation; Back preserves results. Pagination is deferred. Bind all callbacks to stored user/chat state, reject stale callbacks, and escape external text for Telegram rendering. Keep upstream operations asynchronous.
 
 Validation: handler tests covering authentication, CAPTCHA, search, numeric selection, description splitting, Back navigation, no results, ownership, cancellation, and expiry. This step displays confirmation controls but does not yet enable real submissions.
+
+## 5. Transmission integration
+
+Inspect the target Transmission version and support its RPC protocol. Implement session negotiation, optional authentication, torrent submission, duplicate detection, and torrent lookup by info hash. Validate torrent data and derive its identity before submission. Reconcile timeout outcomes before permitting retries. Support an optional download directory.
+
+Validation: mocked RPC tests for acceptance, duplicates, session negotiation, failures, and timeout reconciliation. Any live submission requires explicit test authorization.
 
 ## 6. Confirmed download and submission workflow
 

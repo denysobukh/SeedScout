@@ -48,6 +48,6 @@ The user approved this flow. Download is the explicit confirmation; no extra con
 ## Implementation boundaries
 
 - Step 3: RuTracker session/login operations, user/chat-scoped CAPTCHA lifecycle, top-10 search parsing, full topic descriptions, and a separate torrent retrieval method.
-- Step 5: Telegram prompts, image delivery and answer collection, numeric selection, split descriptions, and Download/Back navigation. Persist or safely reject interaction state after restart.
+- Step 4: Telegram prompts, image delivery and answer collection, numeric selection, split descriptions, and Download/Back navigation. Persist or safely reject interaction state after restart.
 - Step 6: wire Download to the confirmed torrent retrieval and Transmission workflow.
 - Authentication retries resume the saved operation; never silently change a query or selected topic.

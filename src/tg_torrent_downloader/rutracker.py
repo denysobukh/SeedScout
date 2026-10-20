@@ -730,6 +730,6 @@ class RuTrackerClient:
                 raise UnexpectedPage("RuTracker returned an unexpected torrent format")
             if not response.body.startswith(b"d") or not response.body.endswith(b"e"):
                 raise UnexpectedPage("RuTracker returned invalid torrent bytes")
-            # Full bencode validation and info-hash derivation belong to step 4.
+            # Full bencode validation and info-hash derivation belong to step 5.
             self._set_state("torrent_received")
             return response.body

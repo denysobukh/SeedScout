@@ -10,7 +10,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 - Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
 - Planning: specification, implementation plan, and progress file approved by the user.
 - Implementation: step 3 committed as 345d85d; diagnostic logging specification committed as 786035a. Diagnostic logging committed as 07f5f91. Browser-session login update approved by the user and included in its implementation commit.
-- Next action: implement step 4 (Transmission integration), then stop for review before committing. Actual credential login and authenticated RuTracker operations still need live verification.
+- Next action: implement step 4 (Telegram search and selection), then stop for review before committing. Actual credential login and authenticated RuTracker operations still need live verification.
 - Live verification: Chrome obtained cf_clearance and aiohttp reused the imported cookies/User-Agent to fetch the login page successfully. Actual login and authenticated search/topic behavior remain unverified. Live Transmission submissions still require explicit test authorization.
 
 ## Step tracker
@@ -23,8 +23,8 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 3 | RuTracker integration | Approved; committed; live authenticated verification limited |
 | 3a | Diagnostic logging follow-up | Approved; committed |
 | 3b | Playwright browser-session login | Approved; committed |
-| 4 | Transmission integration | Not started |
-| 5 | Telegram search and selection | Not started |
+| 4 | Telegram search and selection | Not started |
+| 5 | Transmission integration | Not started |
 | 6 | Confirmed download and submission | Not started |
 | 7 | Operational readiness and acceptance | Not started |
 
@@ -79,16 +79,16 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 
 - Added asynchronous RuTrackerClient with its own cookie session per user/chat workflow, serialized operations, safe errors, timeouts, response-size bounds, and same-origin HTTPS redirects. No dependency changes.
 - Authentication reads the homepage form and POSTs login_username/login_password to /forum/login.php. No GET of the dedicated login page. This incorporates the user's correction and is covered by a regression test.
-- Added in-memory user/chat-scoped CAPTCHA challenges with image retrieval, five-minute expiry, cancellation, answer submission, renewed challenge handling, and single consumption even after a network failure. No Telegram delivery yet (step 5).
+- Added in-memory user/chat-scoped CAPTCHA challenges with image retrieval, five-minute expiry, cancellation, answer submission, renewed challenge handling, and single consumption even after a network failure. No Telegram delivery yet (step 4).
 - Added unchanged-query Windows-1251 search requests, up to ten distinct results in source order, available size/seed metadata, explicit empty-results handling, and session-expiry errors for caller-driven reauthentication/resumption.
 - Added full first-post description extraction, including hidden spoiler text and useful image/link URLs, excluding scripts and replies. Does not retrieve embedded media or torrent bytes while browsing.
-- Added separate torrent retrieval with basic MIME/framing checks. Full bencode/hash verification remains step 4; confirmed workflow wiring remains step 6.
+- Added separate torrent retrieval with basic MIME/framing checks. Full bencode/hash verification remains step 5; confirmed workflow wiring remains step 6.
 - Validation: 120 tests passed (46 new cases); Ruff lint and formatting passed; git diff whitespace check passed. Tests cover authentication, CAPTCHA ownership/expiry/refresh/concurrency/restart, form encoding, unchanged queries, top-ten ordering, descriptions, unsafe links/redirects, response bounds, and HTTP/network failures.
 - Live verification: dedicated login GET returned HTTP 403. Following the user's correction, verified both https://rutracker.org/ and /forum/index.php return HTTP 200, with a Windows-1251 login form containing the stated fields and POST action login.php.
 - A single live authentication attempt using local credentials received HTTP 403 from the login POST. No successful auth, live CAPTCHA, authenticated search, or authenticated topic checks could be completed. No real torrent file was downloaded or submitted. No credential values or cookie state were printed or saved in fixtures.
 - Fixtures are synthetic and explicitly labeled; auth markers, CAPTCHA markup, and authenticated search/topic selectors remain assumptions pending live verification. Do not claim successful live integration based on fixture tests.
 - Updated README.md, SPECIFICATION.md, and RUTRACKER_FLOW.md with homepage login behavior and limitations.
-- Review: approved by the user with the instruction to commit, including the homepage correction and documented live verification limitation. Telegram conversation remains step 5, Transmission client step 4, and Download orchestration step 6.
+- Review: approved by the user with the instruction to commit, including the homepage correction and documented live verification limitation. Telegram conversation remains step 4, Transmission client step 5, and Download orchestration step 6.
 
 ## Diagnostic logging specification update
 
@@ -107,7 +107,7 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Preserved --check-config without filesystem/network side effects; normal startup opens the log file. Added README configuration, lifecycle, retention, and limitations, and inserted this follow-up in the implementation plan.
 - Validation: 142 tests passed (22 new cases), Ruff lint/format checks passed, git diff whitespace check passed. Includes an actual aiohttp local-server test for outgoing auto headers, cookies, redirects and a 403 response; verifies secrets are absent and requests remain unchanged. Other tests cover rotation/retention, owner-only permissions, failure diagnostics, configuration validation, input redaction, and durable state events.
 - No external service calls, real credentials, or live torrent downloads/submissions were used for this follow-up. Tests use temporary logs and a local HTTP server. Live RuTracker login limitation is unchanged.
-- Review: approved by the user with the instruction to commit. Remaining Telegram command/numeric/button input logging will be wired in step 5, and live Transmission workflow remains steps 4/6. This change does not implement those handlers or claim full end-to-end logging coverage yet.
+- Review: approved by the user with the instruction to commit. Remaining Telegram command/numeric/button input logging will be wired in step 4, and live Transmission workflow remains steps 5/6. This change does not implement those handlers or claim full end-to-end logging coverage yet.
 
 ## Playwright browser-session login review checkpoint
 
@@ -120,3 +120,8 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Automated validation: 153 tests passed (11 new cases), Ruff lint and formatting passed. Tests cover browser status/URL/form checks, missing clearance, timeouts and cleanup, scoped cookie/User-Agent transfer, expired clearance, rendered-form login, no POST on browser failure, and denied-session invalidation. Most browser failure tests use a fake Playwright API; the live check confirms real browser capture and HTTP reuse.
 - Updated specification, decision tree, implementation plan, and README. Deployment now requires installed Google Chrome and an active graphical session. Actual credential login/CAPTCHA/search remain unverified by this update; earlier direct-HTTP 403 attempts are historical.
 - Review: user approved the browser-session login update and requested documentation updates and commit. Next numbered step is 4; it has not started.
+
+## Plan order update
+
+- User requested Telegram conversation before Transmission integration. Renumbered remaining steps: 4 Telegram search and selection, 5 Transmission integration, 6 confirmed download/submission, 7 operational readiness.
+- Updated cross-references to the new numbering; next implementation step is 4 (Telegram). Documentation/order change only; no runtime behavior changed. User approved committing this update.
