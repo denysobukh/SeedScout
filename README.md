@@ -4,7 +4,7 @@ Python Telegram bot for searching RuTracker, confirming an exact release, and se
 
 ## Current status
 
-Step 1 provides project setup, configuration validation, and logging. Search, Telegram polling, and Transmission operations will be added in later steps. The default command exits with an explanatory message until polling is implemented.
+Steps 1–2 provide project setup, configuration validation, logging, and durable workflow storage. Search, Telegram polling, and Transmission operations will be added in later steps. The default command exits with an explanatory message until polling is implemented.
 
 ## Setup
 
@@ -37,8 +37,18 @@ uv run --locked ruff check .
 uv run --locked ruff format --check .
 ```
 
-`uv.lock` pins application, development, and transitive dependencies. Commit intentional dependency updates together with `pyproject.toml`. SQLite uses Python's standard library; persistent workflow storage is step 2.
+`uv.lock` pins application, development, and transitive dependencies. Commit intentional dependency updates together with `pyproject.toml`. SQLite storage uses Python's standard library and requires no additional service.
 
 Logs go to stderr, redact configured credentials and common authentication headers, and suppress dependency debug logging. Never log request bodies, raw headers, cookies, or settings objects. `.env`, local databases, and temporary torrent files are ignored by Git.
 
 Read [PROGRESS.md](PROGRESS.md) when resuming work. Each implementation step requires user review before its commit.
+
+## Workflow storage
+
+`WorkflowStore(Settings.database_path)` provides durable searches and selections. Call `initialize()` once at startup to create its directory and versioned schema. In async handlers, run store operations with `await asyncio.to_thread(...)`; each operation opens and closes its own connection with a bounded lock timeout. No network operation belongs inside a database transaction.
+
+Searches preserve ordered result snapshots and expire after 15 minutes by default. Select and confirm callbacks must supply the requesting Telegram user and chat. Selecting the same result twice returns the same selection. Only a successful `claim_confirmation()` permits torrent retrieval; repeated or competing claims fail. Cancellation only applies to pending selections. Expiry blocks new claims but permits an already confirmed operation to finish.
+
+The workflow is `pending → claimed → submitting → accepted/duplicate`, with `cancelled`, `failed`, and `uncertain` outcomes. Before calling Transmission, persist the validated torrent hash with `begin_submission()`. Worker transitions require the claim token. Mark an ambiguous RPC outcome uncertain, and never reset it automatically for retry.
+
+`list_incomplete()` exposes claimed, submitting, and uncertain operations to the future recovery coordinator. After previous workers have stopped, claimed work can be failed safely because submission was not started. Submitting and uncertain work require a Transmission lookup by stored hash before resolution. `fail()` requires a known failure or a reconciled absence; failed selections require a fresh search and confirmation. This store does not perform those service calls itself. Schema versions newer than supported are rejected without modification.

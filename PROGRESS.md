@@ -7,11 +7,11 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 ## Current checkpoint
 
 - Language: Python, approved by the user.
-- Repository: main; initial planning commit 9f31c21.
+- Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf.
 - Planning: specification, implementation plan, and progress file approved by the user.
-- Implementation: step 1 approved by the user and included in its implementation commit.
-- Next action: implement step 2 (durable workflow state), then stop for user review before committing it.
-- Blocking requirements: none for planning or step 1. Live service checks later require credentials; live torrent submissions require explicit test authorization.
+- Implementation: step 2 approved by the user and included in its implementation commit.
+- Next action: implement step 3 (RuTracker integration), then stop for user review before committing it.
+- Blocking requirements: none for step 2. Live service checks later require credentials; live torrent submissions require explicit test authorization.
 
 ## Step tracker
 
@@ -19,7 +19,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | --- | --- | --- |
 | 0 | Specification and implementation plan | Approved; included in initial commit |
 | 1 | Python foundation and configuration | Approved; committed |
-| 2 | Durable workflow state | Not started |
+| 2 | Durable workflow state | Approved; committed |
 | 3 | RuTracker integration | Not started |
 | 4 | Transmission integration | Not started |
 | 5 | Telegram search and selection | Not started |
@@ -50,3 +50,19 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Local tooling: uv installed in ignored .tools/; project dependencies installed in ignored .venv/. No global package installation, real credentials, or live service calls.
 - Expected limitation: polling and integrations are not implemented in this step. --check-config validates settings offline; default invocation returns exit code 1 with an explanatory message.
 - Review: approved by the user with the instruction to commit. Verified that .env and .env.* are ignored, .env.example is permitted, and no real environment files are tracked. Step 2 has not started.
+
+## Step 2 review checkpoint
+
+- Added immutable torrent result, search, selection, and status models. Topic URLs derive from validated RuTracker topic IDs; optional metadata is preserved without invention.
+- Added a versioned SQLite schema and transactional WorkflowStore with per-operation connections, bounded lock waits, explicit commits/rollback, and foreign keys. No new dependencies.
+- Stored ordered search snapshots, user/chat ownership, expiry, and stable selections. Repeated selection of the same search result returns its existing selection.
+- Atomic confirmation claims use database transactions and a worker claim token. Confirmation and cancellation compete for the same pending state; only one can win.
+- Added submission transitions that persist a validated torrent hash before an add RPC. Terminal states cannot be reclaimed. Ambiguous outcomes remain blocked as uncertain.
+- Internal list_incomplete() exposes claimed/submitting/uncertain records after restart, without automatically resetting them. The future step 6 coordinator must reconcile submitting/uncertain records through Transmission and stop prior workers before recovery.
+- Documented asyncio.to_thread usage for this synchronous storage API, lifecycle, expiry behavior, and recovery obligations in README.md.
+- Validation: full suite 74 passed (22 new cases), Ruff lint and formatting passed, git diff whitespace check passed. Concurrency tests use separate store instances and simultaneous threads; restart tests reopen the on-disk database and initialize it again.
+- Tests cover ownership on all user operations, invalid IDs/positions, immutable snapshots, expiry boundaries, cancellation, terminal transitions, wrong worker tokens, concurrent confirmations, cancellation races, hash persistence, restart recovery, unsupported schema versions, empty results, and off-event-loop usage.
+- Review: approved by the user with the instruction to commit. Step 3 has not started. No credentials read or live service calls made for this step.
+- Expected limitation: recovery lookup and live submissions are implemented in later steps; this storage layer records state and enforces transitions only. Runtime startup wiring remains deferred to the bot orchestration steps.
+
+- Specification update: user requested SOLID and KISS guidelines; added practical design principles to SPECIFICATION.md. Included with the approved step 2 commit.

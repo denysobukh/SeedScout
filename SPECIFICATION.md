@@ -72,6 +72,14 @@ Build a Telegram bot that finds torrents on rutracker.org for content requested 
 - Unauthorized users and users interacting with another user's buttons cannot trigger downloads.
 - RuTracker and Transmission failures produce useful messages without disclosing secrets.
 
+## Design principles
+
+Strive to follow SOLID and KISS principles when designing and implementing the application:
+
+- Keep modules focused on a clear responsibility, with explicit boundaries between Telegram interaction, RuTracker access, Transmission access, and workflow storage.
+- Apply SOLID where it improves clarity, maintainability, and testability. Keep interfaces small and dependencies explicit.
+- Prefer the simplest solution that satisfies current requirements. Avoid speculative abstractions, unnecessary layers, and premature generalization.
+
 ## Initial scope
 
 The initial version covers searching, listing, selecting, confirming, downloading torrent files, and submitting them to Transmission. Content recommendations, automatic release selection, media playback, and download-completion notifications are outside the initial scope. Implementation language: Python (approved). Proposed libraries: aiogram, aiohttp, and Beautiful Soup, with SQLite for durable workflow state. Start with Telegram long polling; finalize dependency versions and runtime requirements during step 1.
