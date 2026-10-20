@@ -2,10 +2,10 @@
 
 The user approved this flow. Download is the explicit confirmation; no extra confirmation screen is required.
 
-1. **Check authentication**
+1. **Check authentication** by fetching the homepage (`https://rutracker.org/`)
    - Valid session → 4.
    - Missing or expired session → 2.
-2. **Attempt login** using configured credentials
+2. **Attempt login** using the homepage form (`login_username`, `login_password`), posting configured credentials to `/forum/login.php`. Do not GET the dedicated login page.
    - Successful → 4 (or resume the operation interrupted by expiry).
    - CAPTCHA required → 3.
    - Invalid credentials → explain the error and stop.

@@ -9,9 +9,9 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 - Language: Python, approved by the user.
 - Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
 - Planning: specification, implementation plan, and progress file approved by the user.
-- Implementation: step 2 committed. User approved the detailed RuTracker flow and authorized its documentation commit followed by step 3 implementation.
-- Next action: implement step 3 against RUTRACKER_FLOW.md, validate, and stop for review before its implementation commit.
-- Blocking requirements: none for step 2. Live service checks later require credentials; live torrent submissions require explicit test authorization.
+- Implementation: confirmed flow documentation committed as 70740e3. Step 3 approved by the user and included in its implementation commit.
+- Next action: implement step 4 (Transmission integration), then stop for user review before committing it. RuTracker authenticated verification remains limited by HTTP 403 on login POST.
+- Live verification limitation: RuTracker homepage is accessible, but login POST returns HTTP 403. Implementation and offline tests are complete; authenticated compatibility remains unverified. Live Transmission submissions still require explicit test authorization.
 
 ## Step tracker
 
@@ -20,7 +20,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 0 | Specification and implementation plan | Approved; included in initial commit |
 | 1 | Python foundation and configuration | Approved; committed |
 | 2 | Durable workflow state | Approved; committed |
-| 3 | RuTracker integration | Not started |
+| 3 | RuTracker integration | Approved; committed; live authenticated verification limited |
 | 4 | Transmission integration | Not started |
 | 5 | Telegram search and selection | Not started |
 | 6 | Confirmed download and submission | Not started |
@@ -72,3 +72,18 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - User approved authentication before query, user-solved CAPTCHA, unchanged queries, numbered first 10 results, full descriptions, and Download/Back navigation.
 - Added RUTRACKER_FLOW.md; aligned the specification and steps 3, 5, and 6. Pagination is deferred; Download is explicit confirmation.
 - User explicitly authorized committing these documentation changes before implementing step 3.
+
+## Step 3 review checkpoint
+
+- Added asynchronous RuTrackerClient with its own cookie session per user/chat workflow, serialized operations, safe errors, timeouts, response-size bounds, and same-origin HTTPS redirects. No dependency changes.
+- Authentication reads the homepage form and POSTs login_username/login_password to /forum/login.php. No GET of the dedicated login page. This incorporates the user's correction and is covered by a regression test.
+- Added in-memory user/chat-scoped CAPTCHA challenges with image retrieval, five-minute expiry, cancellation, answer submission, renewed challenge handling, and single consumption even after a network failure. No Telegram delivery yet (step 5).
+- Added unchanged-query Windows-1251 search requests, up to ten distinct results in source order, available size/seed metadata, explicit empty-results handling, and session-expiry errors for caller-driven reauthentication/resumption.
+- Added full first-post description extraction, including hidden spoiler text and useful image/link URLs, excluding scripts and replies. Does not retrieve embedded media or torrent bytes while browsing.
+- Added separate torrent retrieval with basic MIME/framing checks. Full bencode/hash verification remains step 4; confirmed workflow wiring remains step 6.
+- Validation: 120 tests passed (46 new cases); Ruff lint and formatting passed; git diff whitespace check passed. Tests cover authentication, CAPTCHA ownership/expiry/refresh/concurrency/restart, form encoding, unchanged queries, top-ten ordering, descriptions, unsafe links/redirects, response bounds, and HTTP/network failures.
+- Live verification: dedicated login GET returned HTTP 403. Following the user's correction, verified both https://rutracker.org/ and /forum/index.php return HTTP 200, with a Windows-1251 login form containing the stated fields and POST action login.php.
+- A single live authentication attempt using local credentials received HTTP 403 from the login POST. No successful auth, live CAPTCHA, authenticated search, or authenticated topic checks could be completed. No real torrent file was downloaded or submitted. No credential values or cookie state were printed or saved in fixtures.
+- Fixtures are synthetic and explicitly labeled; auth markers, CAPTCHA markup, and authenticated search/topic selectors remain assumptions pending live verification. Do not claim successful live integration based on fixture tests.
+- Updated README.md, SPECIFICATION.md, and RUTRACKER_FLOW.md with homepage login behavior and limitations.
+- Review: approved by the user with the instruction to commit, including the homepage correction and documented live verification limitation. Telegram conversation remains step 5, Transmission client step 4, and Download orchestration step 6.

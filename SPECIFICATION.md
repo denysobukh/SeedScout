@@ -31,7 +31,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 ### RuTracker integration
 
 - Search rutracker.org and retrieve topic metadata and torrent files.
-- Check authentication before asking for a query; log in with configured credentials when needed.
+- Check authentication on the homepage before asking for a query. Use its login form (`login_username`, `login_password`) and POST credentials to `/forum/login.php` when needed; do not depend on fetching the dedicated login page.
 - When login requires CAPTCHA, deliver its image to the requesting user, submit their answer, and repeat with a refreshed image when necessary. Scope challenges and answers to that user and chat, expire challenges, and support cancellation.
 - Preserve queries and selected topics across session reauthentication. Retrieve the full release description only after selection; opening a description must not download a torrent file.
 - Preserve the association between each displayed result, its topic, and the downloaded torrent file.

@@ -4,7 +4,7 @@ Python Telegram bot for searching RuTracker, confirming an exact release, and se
 
 ## Current status
 
-Steps 1–2 provide project setup, configuration validation, logging, and durable workflow storage. Search, Telegram polling, and Transmission operations will be added in later steps. The default command exits with an explanatory message until polling is implemented.
+Steps 1–3 provide project setup, configuration validation, logging, durable workflow storage, and the RuTracker client. Telegram polling and Transmission operations will be added in later steps. The default command exits with an explanatory message until polling is implemented.
 
 ## Setup
 
@@ -52,3 +52,17 @@ Searches preserve ordered result snapshots and expire after 15 minutes by defaul
 The workflow is `pending → claimed → submitting → accepted/duplicate`, with `cancelled`, `failed`, and `uncertain` outcomes. Before calling Transmission, persist the validated torrent hash with `begin_submission()`. Worker transitions require the claim token. Mark an ambiguous RPC outcome uncertain, and never reset it automatically for retry.
 
 `list_incomplete()` exposes claimed, submitting, and uncertain operations to the future recovery coordinator. After previous workers have stopped, claimed work can be failed safely because submission was not started. Submitting and uncertain work require a Transmission lookup by stored hash before resolution. `fail()` requires a known failure or a reconciled absence; failed selections require a fresh search and confirmation. This store does not perform those service calls itself. Schema versions newer than supported are rejected without modification.
+
+## RuTracker client
+
+`RuTrackerClient` is an asynchronous context manager bound to one Telegram user/chat workflow. It owns a cookie session and serializes its requests. `ensure_authenticated()` reads the homepage form and either completes login or returns a `CaptchaChallenge`. It never fetches the dedicated login page; credentials are posted to `/forum/login.php`.
+
+The future Telegram handlers deliver `challenge.image` and collect an answer. `answer_captcha()` requires the challenge ID and matching user/chat IDs, and returns either successful authentication or a new challenge. Challenges expire after five minutes, can be cancelled, and are consumed once. Cookies, CAPTCHA fields, and images remain in memory; a restart requires fresh authentication. The client does not log credentials, answers, or response bodies.
+
+After authentication, `search(query)` sends the original query as the `nm` search value and returns up to ten distinct topics in source order, with available size and seed metadata. RuTracker's legacy search encoding is Windows-1251; unsupported characters produce an explicit error rather than a rewritten query. `get_topic(result)` returns the full first-post description as plain text, including spoiler contents and useful links/image URLs, without fetching images or torrent bytes. Telegram splitting and rendering belong to step 5.
+
+`AuthenticationRequired` tells the conversation to authenticate and resume its saved query/topic. Other explicit errors cover denied access, rate limits, unavailable topics, network failures, and changed markup. Requests have timeouts and response-size limits; redirects remain on HTTPS rutracker.org. Failures do not automatically replay login POSTs. The user-facing Retry actions are wired in step 5.
+
+`download_torrent(topic_id)` is a separate operation reserved for step 6 after explicit Download confirmation. It checks response type and basic torrent framing; full bencode validation and info-hash calculation belong to step 4. No live torrent retrieval has been performed.
+
+Live verification: homepage and `/forum/index.php` return HTTP 200 with the expected login form and Windows-1251 encoding. The login POST returns HTTP 403 in this environment, so successful authentication, actual CAPTCHA markup, and authenticated search/topic parsing still need live verification. Fixtures are synthetic examples, explicitly labeled in `tests/fixtures/rutracker/README.md`; passing them does not establish live compatibility.
