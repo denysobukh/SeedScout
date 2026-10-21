@@ -6,11 +6,11 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 
 ## Current checkpoint
 
-- Language: Python. Repository: main; latest approved commit is 98a1394 (menu, active torrents, reload, and Google links).
+- Language: Python. Repository: main; latest approved commit is b0d9827 (/start login check before menu).
 - Steps 1–6 and the approved search/login/UI updates are committed. User approved committing removal of all Cancel buttons and shorter login/search prompts.
 - Step 6 connects explicit Download confirmation to retrieval, validation, durable submission and outcome reporting. It adds /status, schema version 3/found outcomes, transactional unresolved-hash guards, cancellation-safe writes, and startup recovery under a per-database runtime lock.
 - Agent verification used synthetic torrents and fake services only for submissions. Earlier read-only live checks reached Transmission 4.1.3/RPC 19/API 6.0.1; no agent-initiated live torrent retrieval/submission has been performed.
-- /start login-check screen before menu, with log in hidden after successful authentication: approved by the user for commit. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
+- macOS install.sh and service management follow-up: approved by the user for commit. User explicitly selected LaunchAgent as the default for visible Chrome. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
 
 ## Step tracker
 
@@ -25,7 +25,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 4 | Telegram search and selection | Approved; committed |
 | 5 | Transmission integration | Approved; committed as 8e2a941 |
 | 6 | Confirmed download and submission | Approved; committed as 3ebde71 |
-| 7 | Operational readiness and acceptance | Not started |
+| 7 | Operational readiness and acceptance | Partial: installer follow-up under review; remaining readiness/acceptance pending |
 
 ## Validation and review log
 
@@ -315,3 +315,15 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Final checks: Ruff lint/format and git whitespace checks passed. No old bot process remained; started the updated app for Telegram review. Startup confirmed Transmission running and zero interrupted recovery operations. Send /start to exercise the new login-check screen. Live RuTracker authentication is left to user review; no agent-triggered login or torrent retrieval/submission was performed. Changes remain uncommitted.
 
 - User approved committing the /start login check and conditional menu controls. Includes implementation, 87 passing conversation tests, and updated specification, flow, README, plan, and progress. Lint/format/whitespace checks passed. Restarted the bot again at the user’s request for verification before approval; startup was healthy. Remaining step 7 acceptance work stays pending.
+
+## macOS installer follow-up
+
+- User requested install.sh checking Python/Transmission, prompts for required Telegram env configuration with retained defaults, input restart from every prompt, launchd installation, and --uninstall retaining all other data. User selected LaunchAgent as the default after the visible-Chrome GUI dependency was explained; optional --daemon remains available with that limitation documented.
+- Added executable install.sh wrapper and a Python installer helper. Checks installed Python 3.14; uses uv (PATH or ignored .tools/bin/uv) to sync locked runtime dependencies without automatic Python downloads; checks configured/default Transmission app bundles. Prompts service type/token/allowlist, masks token defaults/input, supports :restart/:quit throughout and requires explicit yes on final review. Existing settings/comments/explicit blanks are retained; only confirmed Telegram fields and a missing app-path setting are written atomically with 0600 permissions after config validation and concurrent-edit detection.
+- Generates plist with absolute checkout .venv Python -u -m entry point, working directory, private logs, crash restart throttle, and no credentials. Installs agent in the normal user's graphical session by default; daemon uses UserName and scoped sudo commands. Refuses foreign-checkout service replacements and manual bot-worker conflicts; bootstrap failures attempt config/plist rollback and prior-service reload. --uninstall unloads/removes only the service, without inspecting config/Transmission or changing dependencies/data; Python 3.10+ is still needed to run that helper.
+- Added 19 isolated tests covering all prompt restart points, masked default retention, exact plist arguments/XML path handling, existing settings/comments, new installs, loaded service reinstall/uninstall, failure rollback, concurrent env edits, manual-worker locks, foreign-service refusal, missing runtime dependencies for uninstall, app detection, and no-side-effect --help. Focused tests passed; shell syntax/help passed; installer lint passed. Full-suite and final validation follow.
+- No actual service was installed/uninstalled, no real .env was edited, and no bot polling/torrent action was started by these tests. Changes remain uncommitted for user review. This implements the installer portion of step 7; final deployment/acceptance work remains pending.
+
+- Final validation: all 430 full-suite tests passed before the last Transmission-path consistency correction; all 20 installer tests passed after that correction. A nonempty invalid configured app path now fails without replacing it, rather than finding another app while preserving the broken setting. Project lint/format, bash syntax, offline --help, and whitespace checks passed. No real service was registered/unloaded and the real ignored .env was not edited. Installer/docs/tests remain uncommitted for user review. Run ./install.sh in an interactive terminal when ready; default is the user-selected LaunchAgent.
+
+- User approved committing install.sh, the Python launchd installer helper, isolated installer tests, and updated documentation/progress. LaunchAgent remains the user-selected default, with optional daemon mode and service-only uninstall preserving application data. Validation: 430 full-suite tests passed before the final app-path correction; all 20 installer tests passed afterward, plus lint/format/shell syntax/help/whitespace checks. No real service was installed and no secrets or runtime state are included. Remaining operational acceptance work is pending.

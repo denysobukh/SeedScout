@@ -41,6 +41,29 @@ In this workspace, the installed uv executable is also available as `.tools/bin/
 
 Exit codes: `0` for a successful configuration check or clean shutdown, `2` for configuration/argument errors, and `1` for startup/polling failures.
 
+## Install as a macOS login service
+
+Prerequisites: installed **Python 3.14**, **Transmission.app**, **Google Chrome**, and **uv** (the checkout's `.tools/bin/uv` is also accepted). Configure Remote Access in Transmission separately. Run as your normal user from an interactive terminal, with a graphical login session:
+
+```bash
+./install.sh
+```
+
+The script finds installed Python 3.14, installs the locked runtime dependencies into this checkout's `.venv` using `uv sync --locked --no-dev --no-python-downloads`, and verifies the Transmission bundle. It does not install Python or Transmission automatically. A nonempty configured Transmission app path must be usable; an invalid one is reported without replacing it. If none is configured, the installer checks `/Applications/Transmission.app` and `~/Applications/Transmission.app`.
+
+Choose the service type and enter `TELEGRAM_BOT_TOKEN` and comma-separated `TELEGRAM_ALLOWED_USER_IDS`. Defaults come from exported environment variables first, then this checkout's `.env`. Press **Enter** to keep a default; the current token is offered as a masked default and token entry is hidden. At every installer prompt, **`:restart`** restarts input from the original values and **`:quit`** cancels. Nothing is saved from unfinished input. Review the summary and enter **yes** to save and register the service; Enter at that final prompt cancels. Other `.env` settings, including explicit blanks, remain intact. The saved file is owner-only (`0600`); the installer detects concurrent file edits instead of overwriting them. Dependencies may already have been synchronized before cancellation.
+
+The default, selected for this application, is a **LaunchAgent** at `~/Library/LaunchAgents/org.seedscout.bot.plist`. It starts now and on subsequent graphical logins, running the absolute `.venv/bin/python -u -m tg_torrent_downloader` with this checkout as its working directory. Python, source, `.env`, SQLite state, and logs stay in place; keep the checkout at the same path. The plist contains no bot token. Logs are `.runtime/launchd.stdout.log`, `.runtime/launchd.stderr.log`, and the existing rotating bot log. A manual bot worker must be stopped before installation; an installed service is stopped/reloaded on repeat installation. A bootstrap failure attempts to restore the prior configuration/plist and reload a previously loaded service.
+
+```bash
+./install.sh --uninstall          # unload and remove only the installed service
+./install.sh --uninstall --agent  # explicitly select the login service
+```
+
+Uninstall keeps `.env`, database, logs, source, `.venv`, and Transmission. It does not need uv, runtime dependencies, a valid `.env`, or Transmission; it still needs an installed Python 3.10+ to run the helper. The installer refuses to replace/remove a plist belonging to a different checkout. To change service types, uninstall the previous one first.
+
+`./install.sh --daemon` offers a system LaunchDaemon at `/Library/LaunchDaemons/org.seedscout.bot.plist`, running as your normal user through `UserName`; system registration/removal requests sudo for those operations only. It starts at boot, but cannot access the graphical session required by visible Chrome and automatic GUI app startup. Use the default agent for the current bot. See [Apple's daemon/agent guidance](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/DesigningDaemons.html). `./install.sh --uninstall --daemon` removes only that daemon. `./install.sh --help` shows the options without changing dependencies or services.
+
 ## Development
 
 ```bash
