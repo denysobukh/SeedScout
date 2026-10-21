@@ -150,9 +150,34 @@ class WorkflowStore:
             if version == 4:
                 db.execute("ALTER TABLE search_sessions ADD COLUMN total_results INTEGER")
                 version = 5
-            if version != 5:
+            if version == 5:
+                db.execute("""CREATE TABLE ui_controls (
+                    token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, chat_id INTEGER NOT NULL,
+                    actions TEXT NOT NULL, context TEXT NOT NULL
+                )""")
+                version = 6
+            if version != 6:
                 raise StateError("Unsupported workflow database schema version")
-            db.execute("PRAGMA user_version = 5")
+            db.execute("PRAGMA user_version = 6")
+
+    def save_ui_control(self, token, user_id, chat_id, actions, context) -> None:
+        """Persist only screen context, never credentials or an authorization to download."""
+        with self._transaction() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO ui_controls VALUES (?,?,?,?,?)",
+                (token, user_id, chat_id, json.dumps(actions), json.dumps(context)),
+            )
+
+    def get_ui_control(self, token, user_id, chat_id, action) -> dict:
+        with self._transaction() as db:
+            row = self._owned(
+                db.execute("SELECT * FROM ui_controls WHERE token=?", (token,)).fetchone(),
+                user_id,
+                chat_id,
+            )
+            if action not in json.loads(row["actions"]):
+                raise Unavailable("Unknown control")
+            return json.loads(row["context"])
 
     @contextmanager
     def runtime_lock(self) -> Iterator[None]:

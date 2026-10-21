@@ -4,7 +4,7 @@ import asyncio
 import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -29,9 +29,11 @@ from tg_torrent_downloader.logging import (
 from tg_torrent_downloader.models import (
     RuTrackerCredentials,
     Search,
+    SearchBatch,
     SearchSession,
     Selection,
     SelectionStatus,
+    TorrentResult,
 )
 from tg_torrent_downloader.pagination import PaginationError, load_page
 from tg_torrent_downloader.rutracker import (
@@ -120,6 +122,7 @@ class Conversation:
     selected: Selection | None = None
     download_claim: Selection | None = None
     sequential_download: bool = False
+    restored_action: str | None = None
     resume: str = "query"
     task: asyncio.Task | None = None
 
@@ -142,6 +145,7 @@ class TelegramConversation:
         self.workflow = workflow
         self.clock = clock
         self.sessions: dict[tuple[int, int], Conversation] = {}
+        self.restoring: set[tuple[int, int]] = set()
 
     async def _call(self, method, **kwargs):
         for attempt in range(3):
@@ -175,6 +179,26 @@ class TelegramConversation:
     async def _text(
         self, chat_id: int, text: str, markup=None, *, entities: list[MessageEntity] | None = None
     ) -> None:
+        if markup:
+            token = markup.inline_keyboard[0][0].callback_data.split(":")[1]
+            c = next(
+                (c for c in self.sessions.values() if c.chat_id == chat_id and c.token == token),
+                None,
+            )
+            if c:
+                await database_call(
+                    self.store.save_ui_control,
+                    c.token,
+                    c.user_id,
+                    c.chat_id,
+                    c.actions,
+                    {
+                        "query": c.query,
+                        "search": asdict(c.search) if c.search else None,
+                        "session": asdict(c.search_session) if c.search_session else None,
+                        "selected_position": c.selected.position if c.selected else None,
+                    },
+                )
         chunks = split_text(text)
         offset = 0
         for index, chunk in enumerate(chunks):
@@ -427,7 +451,10 @@ class TelegramConversation:
             c.user_id,
             c.chat_id,
         )
-        await self._topic(c)
+        if c.credentials is None:
+            await self._authenticate(c, "topic")
+        else:
+            await self._topic(c)
 
     async def handle_callback(self, callback: CallbackQuery) -> None:
         if callback.from_user.id not in self.allowed_users:
@@ -445,6 +472,56 @@ class TelegramConversation:
             and pieces[1] == c.token
             and pieces[2] in c.actions
         )
+        if (
+            (
+                c is None
+                or (
+                    not c.task
+                    and (
+                        self.clock() - c.touched_at >= 900
+                        or (c.search is not None and self.clock() >= c.search.expires_at)
+                    )
+                )
+            )
+            and len(pieces) == 3
+            and pieces[0] == "sc"
+            and callback.message.chat.type == "private"
+        ):
+            key = (callback.from_user.id, callback.message.chat.id)
+            if key in self.restoring:
+                await self._ack(callback.id, text="Restoring this screen; please wait.")
+                return
+            self.restoring.add(key)
+            try:
+                try:
+                    context = await database_call(
+                        self.store.get_ui_control,
+                        pieces[1],
+                        *key,
+                        pieces[2],
+                    )
+                except StateError:
+                    context = None
+                except sqlite3.Error:
+                    await self._ack(
+                        callback.id, text="Could not restore this screen. Try this button again."
+                    )
+                    return
+                if context is not None:
+                    if not await self._ack(callback.id):
+                        return
+                    log_user_input(*key, pieces[2])
+                    # Another input may have started an operation during the database read.
+                    if self.sessions.get(key) is not c or (c is not None and c.task):
+                        return
+                    if c:
+                        await self._discard(c)
+                    c = Conversation(*key, self.clock())
+                    self.sessions[key] = c
+                    await self._execute(c, self._restore_control(c, context, pieces[2]))
+                    return
+            finally:
+                self.restoring.discard(key)
         if not valid or self.clock() - c.touched_at >= 900:
             await self._ack(
                 callback.id, text="This control expired. Use /start or the latest buttons."
@@ -464,6 +541,77 @@ class TelegramConversation:
         finally:
             if c.task is asyncio.current_task():
                 c.task = None
+
+    async def _restore_control(self, c: Conversation, context: dict, action: str) -> None:
+        c.query = context["query"]
+        c.credentials = await database_call(self.store.get_credentials, c.user_id)
+        snapshot, session = context["search"], context["session"]
+        if snapshot:
+            if session:
+                batch = SearchBatch(
+                    tuple(TorrentResult(**r) for r in session["results"]),
+                    next_offset=session["next_offset"],
+                    total_results=session["total_results"],
+                )
+                c.search_session = await database_call(
+                    self.store.save_search_session,
+                    c.user_id,
+                    c.chat_id,
+                    c.query,
+                    batch,
+                )
+                c.search = await database_call(
+                    self.store.select_search_page,
+                    c.search_session.id,
+                    c.user_id,
+                    c.chat_id,
+                    session["current_page"],
+                )
+                c.search_session = await database_call(
+                    self.store.get_search_session,
+                    c.search_session.id,
+                    c.user_id,
+                    c.chat_id,
+                )
+            else:
+                c.search = await database_call(
+                    self.store.save_search,
+                    c.user_id,
+                    c.chat_id,
+                    c.query,
+                    [TorrentResult(**r) for r in snapshot["results"]],
+                )
+        download = action in {"download", "sequential"} or action.startswith(("get", "seq"))
+        if download:
+            position = (
+                int(action[3:]) - 1
+                if action.startswith(("get", "seq")) and action != "sequential"
+                else context["selected_position"]
+            )
+            c.selected = await database_call(
+                self.store.select,
+                c.search.id,
+                position,
+                c.user_id,
+                c.chat_id,
+            )
+            c.sequential_download = action == "sequential" or action.startswith("seq")
+            self._stage(c, "description")
+            await self._screen(
+                c,
+                f"{c.selected.result.title}\n\nConfirm this download again.",
+                ("back", "sequential" if c.sequential_download else "download"),
+            )
+            return
+        if action in {"back", "results"}:
+            await self._results(c)
+        elif action in {"downloads", "reload", "menu", "login", "search", "new"}:
+            await self._callback_action(c, action)
+        elif action.startswith("pick") or action in {"next", "prev"}:
+            c.restored_action = action
+            await self._authenticate(c, "restored")
+        else:
+            await self._menu(c)
 
     async def _callback_action(self, c: Conversation, action: str) -> None:
         if action == "menu":
@@ -677,6 +825,9 @@ class TelegramConversation:
     async def _download(self, c: Conversation, *, reauthenticate: bool = True) -> None:
         c.resume = "download"
         self._stage(c, "downloading")
+        if c.credentials is None:
+            await self._authenticate(c, "download")
+            return
         client = await self._client(c)
         try:
             outcome = await self.workflow.download(
@@ -803,7 +954,10 @@ class TelegramConversation:
             await asyncio.to_thread(self.store.save_credentials, c.user_id, c.credentials)
             c.credentials_unverified = False
         c.challenge = None
-        if c.resume == "menu":
+        if c.resume == "restored":
+            action, c.restored_action = c.restored_action, None
+            await self._callback_action(c, action)
+        elif c.resume == "menu":
             await self._menu(c)
         elif c.resume == "search":
             await self._search(c, reauthenticate=False)
@@ -820,6 +974,9 @@ class TelegramConversation:
 
     async def _search(self, c: Conversation, *, reauthenticate: bool = True) -> None:
         c.resume = "search"
+        if c.credentials is None:
+            await self._authenticate(c, "search")
+            return
         c.search_session, c.pending_page = None, None
         self._stage(c, "searching")
         await self._screen(c, "Searching RuTracker…", ())
@@ -849,6 +1006,9 @@ class TelegramConversation:
         reauthenticate: bool = True,
     ) -> None:
         c.resume, c.pending_page = "page", target
+        if c.credentials is None:
+            await self._authenticate(c, "page")
+            return
         try:
             client = await self._client(c)
             search = await load_page(

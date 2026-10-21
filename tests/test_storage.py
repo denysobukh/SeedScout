@@ -315,6 +315,7 @@ def test_version_one_migration_preserves_workflow(state):
     store, _ = state
     item = selection(store)
     with sqlite3.connect(store.path) as db:
+        db.execute("DROP TABLE ui_controls")
         db.execute("DROP TABLE search_pages")
         db.execute("DROP TABLE search_sessions")
         db.execute("DROP TABLE rutracker_credentials")
@@ -323,4 +324,21 @@ def test_version_one_migration_preserves_workflow(state):
     assert store.get_selection(item.id, 1, -2) == item
     assert store.get_credentials(1) is None
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+
+
+def test_durable_ui_context_is_owned_and_action_bound(state):
+    store, _ = state
+    context = {"query": "movie", "selected_position": 2}
+    store.save_ui_control("screen", 1, 10, ("get3",), context)
+    restored = WorkflowStore(store.path, clock=store.clock)
+    restored.initialize()
+    assert restored.get_ui_control("screen", 1, 10, "get3") == context
+    for token, user, chat, action in [
+        ("screen", 2, 10, "get3"),
+        ("screen", 1, 20, "get3"),
+        ("screen", 1, 10, "get2"),
+        ("unknown", 1, 10, "get3"),
+    ]:
+        with pytest.raises(Unavailable):
+            restored.get_ui_control(token, user, chat, action)

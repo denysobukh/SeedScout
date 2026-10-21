@@ -162,6 +162,7 @@ def test_v3_migration_preserves_existing_credentials_and_selection(state):
     search = store.save_search(1, 10, "old", rows(1, 1))
     selection = store.select(search.id, 0, 1, 10)
     with sqlite3.connect(store.path) as db:
+        db.execute("DROP TABLE ui_controls")
         db.execute("DROP TABLE search_pages")
         db.execute("DROP TABLE search_sessions")
         db.execute("PRAGMA user_version=3")
@@ -169,7 +170,7 @@ def test_v3_migration_preserves_existing_credentials_and_selection(state):
     assert store.get_credentials(1) == pair
     assert store.get_selection(selection.id, 1, 10) == selection
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
 def test_total_pages_rounds_partial_page_and_persists_across_batches(state):

@@ -446,14 +446,16 @@ def test_callbacks_reject_wrong_user_chat_and_old_screen(h):
     asyncio.run(run())
 
 
-def test_restart_rejects_old_controls_without_using_persisted_selection(h):
+def test_restart_download_restores_fresh_confirmation_without_fetching(h):
     async def run():
         await h.search()
         await h.send("1")
         old = h.button("Download")
         fresh = TelegramConversation(h.bot, h.store, frozenset({1}), h.factory, workflow=h.workflow)
         await fresh.handle_callback(callback(old))
-        assert "expired" in h.bot.answers[-1]["text"]
+        assert "Confirm this download again." in h.bot.messages[-1]["text"]
+        assert not h.rpc.adds and not h.client.downloads
+        assert fresh.sessions[(1, 10)].selected.id != h.state.selected.id
         assert len(h.clients) == 1
         await h.flow.close()
 
@@ -542,10 +544,10 @@ def test_expired_download_and_idle_cleanup(h):
         await h.send("1")
         selected = h.state.selected
         h.now[0] += 900
-        # Refresh conversation activity; stored search itself must still enforce its expiry.
+        # Even recent UI activity must recover an expired underlying search safely.
         h.state.touched_at = h.now[0]
         await h.click("Download")
-        assert "unavailable" in h.bot.messages[-1]["text"]
+        assert "Confirm this download again." in h.bot.messages[-1]["text"]
         assert h.store.get_selection(selected.id, 1, 10).claim_token is None
         h.now[0] += 901
         await h.flow.reap_idle()
@@ -1640,5 +1642,86 @@ def test_result_page_total_uses_reported_count_and_survives_back(h):
         await h.click("Back")
         assert h.bot.messages[-1]["text"] == "Page 2 / 13"
         assert h.client.batch_calls == [("ubuntu", 0)]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("action", ["pick3", "get3", "seq3", "next", "back"])
+def test_expired_controls_restore_owned_context(h, restart, action):
+    async def run():
+        results = tuple(TorrentResult(i, f"Release {i}") for i in range(1, 24))
+        h.next_client.batch_outcomes = {0: [SearchBatch(results)]}
+        await h.search()
+        if action == "back":
+            await h.click("2")
+        old = f"sc:{h.state.token}:{action}"
+        if restart:
+            await h.flow.close()
+            h.flow = TelegramConversation(
+                h.bot,
+                h.store,
+                frozenset({1}),
+                h.factory,
+                workflow=h.workflow,
+                clock=lambda: h.now[0],
+            )
+        else:
+            h.now[0] += 901
+            await h.flow.reap_idle()
+        before_downloads = sum(len(client.downloads) for client in h.clients)
+        await h.flow.handle_callback(callback(old))
+        assert (1, 10) in h.flow.sessions
+        assert not h.rpc.adds
+        assert sum(len(client.downloads) for client in h.clients) == before_downloads
+        if action in {"get3", "seq3"}:
+            assert h.state.selected.result.topic_id == 3
+            assert h.state.actions == ("back", "sequential" if action == "seq3" else "download")
+            await h.click("Sequential download" if action == "seq3" else "Download")
+            assert h.rpc.sequential_adds == [action == "seq3"]
+            assert h.client.downloads == [3]
+        elif action == "pick3":
+            assert h.client.topics[-1].topic_id == 3
+            assert h.state.stage == "description"
+        elif action == "next":
+            assert h.state.search_session.current_page == 2
+            assert h.state.search.results[0].topic_id == 11
+        else:
+            assert h.state.stage == "results"
+            assert h.state.search.results[0].topic_id == 1
+
+    asyncio.run(run())
+
+
+def test_idle_current_download_requires_fresh_confirmation(h):
+    async def run():
+        await h.search()
+        await h.click("2")
+        old = h.button("Sequential download")
+        h.now[0] += 901
+        await h.flow.handle_callback(callback(old))
+        assert "Confirm this download again." in h.bot.messages[-1]["text"]
+        assert not h.rpc.adds and not h.client.downloads
+        await h.click("Sequential download")
+        assert h.rpc.sequential_adds == [True]
+        assert h.client.downloads == [2]
+
+    asyncio.run(run())
+
+
+def test_restored_details_can_prompt_for_missing_credentials(h):
+    async def run():
+        await h.search()
+        old = f"sc:{h.state.token}:pick2"
+        await h.flow.close()
+        pair = h.store.get_credentials(1)
+        h.store.forget_credentials(1, pair)
+        await h.flow.handle_callback(callback(old))
+        assert h.state.stage == "login"
+        await h.send("new-user")
+        await h.send("new-password")
+        assert h.state.stage == "description"
+        assert h.client.topics[-1].topic_id == 2
+        assert not h.rpc.adds and not h.client.downloads
 
     asyncio.run(run())
