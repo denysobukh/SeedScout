@@ -251,3 +251,60 @@ def test_expired_clearance_is_not_imported(monkeypatch):
             assert not client._browser_ready
 
     asyncio.run(run())
+
+
+def test_login_form_timeout_records_stage_status_and_challenge_safely(monkeypatch, caplog):
+    browser, page, _, password = fake_browser(monkeypatch, status=403)
+    password.wait_for.side_effect = module.PlaywrightTimeoutError("cookie=private-error-secret")
+    page.evaluate = AsyncMock(
+        return_value={
+            "login_form": False,
+            "password_field": False,
+            "cloudflare_challenge": True,
+            "authenticated_marker": False,
+            "untrusted_content": "private-page-secret",
+        }
+    )
+    with caplog.at_level(logging.INFO), pytest.raises(BrowserSessionError) as caught:
+        asyncio.run(obtain_browser_session(user_id=1, chat_id=2))
+    assert "login form did not appear in time" in str(caught.value)
+    assert "verification prompt was detected" in str(caught.value)
+    assert '"stage": "login_password_field"' in caplog.text
+    assert '"failure": "timeout"' in caplog.text
+    assert '"last_document_status": 403' in caplog.text
+    assert '"cloudflare_challenge": true' in caplog.text
+    assert "rutracker.browser.document" in caplog.text
+    for secret in (
+        "private-error-secret",
+        "private-page-secret",
+        "cookie-secret",
+        "clearance-secret",
+    ):
+        assert secret not in caplog.text and secret not in str(caught.value)
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("stage", ["launch", "homepage", "login_page"])
+def test_browser_failure_reports_actual_stage(monkeypatch, caplog, stage):
+    browser, page, engine, _ = fake_browser(monkeypatch)
+    if stage == "launch":
+        engine.chromium.launch.side_effect = module.PlaywrightError("private-launch-secret")
+    else:
+        original = page.goto.side_effect
+
+        async def goto(url, **kwargs):
+            if url == (module.HOME_URL if stage == "homepage" else module.LOGIN_URL):
+                raise module.PlaywrightTimeoutError("private-navigation-secret")
+            return await original(url, **kwargs)
+
+        page.goto.side_effect = goto
+    with caplog.at_level(logging.INFO), pytest.raises(BrowserSessionError) as caught:
+        asyncio.run(obtain_browser_session(user_id=1, chat_id=2))
+    assert f'"stage": "{stage}"' in caplog.text
+    assert "private-launch-secret" not in caplog.text + str(caught.value)
+    assert "private-navigation-secret" not in caplog.text + str(caught.value)
+    if stage == "launch":
+        assert "Could not start Chrome" in str(caught.value)
+    else:
+        assert "timed out while loading RuTracker" in str(caught.value)
+        browser.close.assert_awaited_once()
