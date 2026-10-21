@@ -8,7 +8,7 @@ Build a Telegram bot that finds torrents on rutracker.org for content requested 
 
 1. The bot checks its RuTracker session, authenticates if necessary, and asks the requesting user to solve any CAPTCHA before prompting for a query.
 2. The bot uses the user's query unchanged to search rutracker.org and requests descending seed-count order, sorts all distinct returned topics by seed count descending before applying the top-10 limit, and shows those results, numbered 1–10 (or fewer when fewer matches exist).
-3. Each result includes its title, a link to the RuTracker topic, and available metadata useful for choosing a release, such as size, seed count, quality, language, and format. Missing metadata is omitted rather than invented.
+3. Each result includes its title and available metadata useful for choosing a release, such as size, seed count, quality, language, and format. Missing metadata is omitted rather than invented.
 4. The user picks a numbered result button (or types a valid displayed result number). The bot opens its stored topic link and displays the full release description, split across Telegram messages as needed, with Download and Back actions. Download is explicit confirmation; Back restores the original results and numbering.
 5. Only after confirmation, the bot downloads the selected topic's `.torrent` file from rutracker.org.
 6. The bot submits that torrent file to Transmission through its RPC interface.
@@ -51,13 +51,16 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 
 ### Transmission integration
 
-- Connect to a configurable Transmission RPC endpoint with optional authentication.
+- Connect to a configurable Transmission RPC endpoint with optional authentication. Negotiate the target version; use JSON-RPC 2.0 for API 6.x and the legacy format for RPC versions 14–17. Reject unsupported versions before mutation.
+- Validate canonical BitTorrent v1 metainfo and derive its info hash from the original encoded info dictionary before submission. Limit bytes/depth/nodes and check file layouts, paths, piece lengths and piece counts. Reject unsupported v2/hybrid and symlink metainfo explicitly.
+- Negotiate the RPC session token with bounded HTTP 409 retries, match response IDs, reject redirects, and bound RPC timeouts/response sizes. Do not log raw RPC errors, authorization/session headers, or base64 metainfo.
 - Submit the downloaded `.torrent` file to Transmission; Transmission performs the content download.
 - Support a configurable download directory, otherwise use Transmission's default.
 - Handle RPC authentication and session negotiation, connection errors, invalid torrent files, and rejected requests.
 - Report an already-added torrent as a duplicate instead of claiming a new download was created.
 - Prevent repeated confirmation clicks from adding the same pending selection multiple times.
-- If a submission times out with an unknown outcome, check Transmission for the torrent before retrying.
+- If a submission times out or has an ambiguous result, look up the persisted hash. Report a match as confirmed present without claiming a new add versus duplicate. If missing or lookup fails, keep the operation uncertain and block add replay; immediate absence alone does not prove that an in-flight add cannot finish.
+- Keep uncertain operations blocked across restarts through durable workflow state. Persist identity before the add RPC; cancellation during submission also requires recovery. Step 6 supplies the durable orchestration around the step 5 adapter.
 
 ## Configuration and security
 

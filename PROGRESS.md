@@ -6,12 +6,11 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 
 ## Current checkpoint
 
-- Language: Python, approved by the user.
-- Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
-- Planning: specification, implementation plan, and progress file approved by the user.
-- Implementation: step 4 committed as f77a3dd. User approved the numbered result button and button-free search-error updates for this commit.
-- Next action: user review and live CAPTCHA test for the CDN fix; do not commit without approval. Step 5 (Transmission integration) has not started. The local test bot uses a temporary wrong username; saved credentials are unchanged.
-- Live verification: browser clearance transfer, credential login, session recheck, search, and full topic extraction passed. User reported the corrected Telegram flow working. CAPTCHA image acquisition now passes live verification; answer submission and the full Telegram CAPTCHA round trip remain to be tested. Live Transmission submissions require explicit test authorization.
+- Language: Python, approved by the user. Repository: main; latest approved commit is 2e02cf5 (simplified torrent detail controls).
+- Steps 1–4, diagnostic logging, Playwright login, SQLite credentials, seed-ranked results, and UI updates are committed.
+- Step 5 is approved for commit: standalone Transmission RPC client and BitTorrent v1 validator. Step 6 (confirmed download/submission orchestration) has not started; Download is still a placeholder.
+- Read-only live verification: installed Transmission 4.1.3, RPC 19/API 6.0.1; the new client negotiated the session and confirmed a missing-hash lookup. No torrent was retrieved or submitted. Live submissions require explicit authorization for the selected test torrent.
+- User approved committing step 5. Next action: implement step 6 when authorized. Use the latest log entries rather than older historical runtime status when resuming.
 
 ## Step tracker
 
@@ -24,7 +23,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 3a | Diagnostic logging follow-up | Approved; committed |
 | 3b | Playwright browser-session login | Approved; committed |
 | 4 | Telegram search and selection | Approved; committed |
-| 5 | Transmission integration | Not started |
+| 5 | Transmission integration | Approved; included in this commit |
 | 6 | Confirmed download and submission | Not started |
 | 7 | Operational readiness and acceptance | Not started |
 
@@ -222,3 +221,17 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Validation: all 51 conversation tests passed; Ruff lint/format and whitespace checks passed. Stopped the previous bot process and restarting the updated app for the ongoing Telegram review; send /start for fresh controls. No commit made.
 
 - User approved committing the simplified torrent detail controls and text-to-search behavior. Validation: 51 conversation tests passed, with Ruff lint/format and whitespace checks passed. Next planned step remains Transmission integration (step 5), pending user instruction.
+
+## Step 5 review checkpoint — Transmission integration
+
+- User authorized implementing step 5. Inspected the installed app and made read-only RPC probes: Transmission 4.1.3, RPC version 19, minimum 14, semantic API version 6.0.1.
+- Added a standalone async TransmissionClient with settings factory, session/version negotiation, API 6.x JSON-RPC and legacy RPC 14–17 support, bounded CSRF token rotation, optional Basic authentication/download directory, response ID checks, timeouts/size bounds, and no redirect/proxy/cookie forwarding. Adjusted aiohttp minimum to 3.14 for its current authentication helper; no new dependency is introduced.
+- Added bounded canonical bencode and BitTorrent v1 validation for single/multifile torrents, declared sizes/pieces, file paths, and the exact original info dictionary SHA-1. Unsupported v2/hybrid and symlink metainfo fail explicitly. Raw torrent bytes/passkeys are excluded from representations and diagnostic errors.
+- add_torrent requires an expected persisted hash, revalidates bytes, submits base64 metainfo, checks returned identity, and distinguishes ADDED, DUPLICATE, and FOUND after reconciliation. Lost/invalid responses, unexpected HTTP failures and timeouts trigger lookup, never blind add replay. Missing/failed lookups leave SubmissionUncertain; the client blocks repeated adds for that hash. Cancellation leaves it blocked too. Durable cross-restart enforcement and user confirmation wiring remain step 6.
+- Diagnostics omit raw RPC payloads/errors, credentials, session headers, metainfo, paths, and names. Reused RPC URL validation between configuration and the adapter. Updated specification, implementation plan, and README, including the previously stale core-workflow statement about result URLs.
+- Tests use synthetic torrents and an ephemeral fake Transmission server; live validation of the actual implemented client used only session_info and find_torrent for a nonexistent hash. Modern protocol negotiation and the missing result passed against the real daemon. No live torrent download/add was performed.
+- Full-suite result before final documentation/log metadata updates: 308 tests passed with no warnings; lint passed. Final checks are recorded below. Changes remain uncommitted pending user review.
+
+- Final verification: full regression suite 308 passed; after final diagnostic and dependency metadata changes, all 142 focused validator/RPC/configuration tests passed. Ruff lint and formatting, offline lock regeneration, and git whitespace checks passed. Locked dependency versions are unchanged (aiohttp 3.14.5); only its supported minimum increased. No live add, torrent retrieval, or Telegram Download wiring was performed. Step 5 is ready for review and remains uncommitted; next action is user review before commit, followed by step 6 when authorized.
+
+- User approved committing step 5. Included the Transmission client, v1 metainfo validator, synthetic/fake-server tests, shared configuration validation, dependency metadata, and documentation. Validation remains 308 full-suite tests passed and 142 final focused tests passed, with lint/format and whitespace checks passed. Step 6 has not started.

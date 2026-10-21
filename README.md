@@ -4,7 +4,7 @@ Python Telegram bot for searching RuTracker, confirming an exact release, and se
 
 ## Current status
 
-Steps 1–4 provide project setup, diagnostic logging, durable workflow storage, the RuTracker client, and the Telegram search conversation. The default command runs long polling. Transmission integration and confirmed torrent submission remain steps 5–6; Download currently explains that downloads are not enabled and does not retrieve torrent files.
+Steps 1–4 provide project setup, diagnostic logging, durable workflow storage, the RuTracker client, and the Telegram search conversation. The default command runs long polling. Step 5 adds a standalone Transmission client and torrent validator. Confirmed torrent submission remains step 6; Download currently explains that downloads are not enabled and does not retrieve torrent files.
 
 ## Setup
 
@@ -75,7 +75,7 @@ After authentication, `search(query)` sends the original query as the `nm` searc
 
 `AuthenticationRequired` tells the conversation to authenticate and resume its saved query/topic. Other explicit errors cover denied access, rate limits, unavailable topics, network failures, and changed markup. Requests have timeouts and response-size limits; redirects remain on HTTPS rutracker.org. Failures do not automatically replay login POSTs. Retry actions preserve the saved query or selected topic; reauthentication can pause for CAPTCHA and then resume the original operation.
 
-`download_torrent(topic_id)` is a separate operation reserved for step 6 after explicit Download confirmation. It checks response type and basic torrent framing; full bencode validation and info-hash calculation belong to step 5. No live torrent retrieval has been performed.
+`download_torrent(topic_id)` is a separate operation reserved for step 6 after explicit Download confirmation. It checks response type and basic torrent framing. The step 5 `validate_torrent()` function provides full v1 metainfo validation and info-hash calculation; step 6 will apply it to downloaded bytes before submission. No live torrent retrieval has been performed.
 
 Live verification: a visible-Chrome run obtained `cf_clearance`, verified the full login form, and successfully reused the cookies/User-Agent to fetch `/forum/login.php` through aiohttp (HTTP 200). That browser-transfer check did not submit credentials. A later login investigation verified real credential login, a repeat authenticated-session check, ten search results for a read-only Ubuntu query, and full topic-description extraction. Live CAPTCHA image acquisition has also been verified against static.rutracker.cc; answer submission and the full Telegram CAPTCHA round trip still need live verification. Earlier direct HTTP login attempts without browser clearance received HTTP 403. Fixtures are synthetic examples, explicitly labeled in `tests/fixtures/rutracker/README.md`; passing them does not establish live compatibility.
 
@@ -96,6 +96,22 @@ Install Google Chrome on the machine that runs the bot and provide an active gra
 Cookies retain their domain/path, secure/HttpOnly flags, and expiry in the HTTP cookie jar. The same browser User-Agent is used for subsequent requests. Cookies, rendered login HTML, and CAPTCHA state remain in memory, isolated per user/chat client. Browser contexts close after capture, and HTTP sessions close on client exit. Missing/expired clearance or a later access denial requires fresh browser verification; failed POSTs are not replayed automatically. This replaces the earlier homepage-only login approach.
 
 No Netscape cookie jar, User-Agent export, or rendered HTML file is written by default. The example artifact names `.rutracker-cookies.txt`, `.rutracker-user-agent.txt`, and `rutracker_login.html` are ignored as a precaution if used during manual diagnostics. Browser document request/response headers use the same sanitization as other diagnostics; session values and HTML are never logged.
+
+## Transmission client and torrent validation (step 5)
+
+`TransmissionClient.from_settings(settings)` is an asynchronous context manager with `session_info()`, `find_torrent(info_hash)`, and `add_torrent(data, expected_info_hash=...)`. It is independent of Telegram and SQLite; step 6 will connect it to the confirmed workflow. The current Download button remains a placeholder.
+
+A read-only probe verified the installed Transmission **4.1.3**, RPC version **19**, API **6.0.1**. The client bootstraps with the compatible read-only `session-get` request, then uses JSON-RPC 2.0/snake_case for API 6.x. Legacy RPC versions 14–17 use the older request format. Unsupported versions fail before any add. See the [Transmission 4.1.3 RPC specification](https://github.com/transmission/transmission/blob/4.1.3/docs/rpc-spec.md) and [legacy RPC specification](https://github.com/transmission/transmission/blob/4.0.6/docs/rpc-spec.md).
+
+The adapter negotiates `X-Transmission-Session-Id` with at most three attempts per call, supports optional HTTP Basic authentication, refuses redirects, disables environment proxies and cookie persistence, and bounds request timeouts and response sizes. Request/response IDs must match. The optional download directory refers to the Transmission host and is omitted when unset. The aiohttp minimum is 3.14 for its current authentication-header API; the lock retains version 3.14.5.
+
+`validate_torrent(data)` accepts at most 16 MiB of canonical bencoded **BitTorrent v1** metainfo. It rejects malformed/trailing data, unsorted or duplicate dictionary keys, excessive depth/node counts, inconsistent piece counts, invalid file layouts and unsafe paths. It derives SHA-1 from the exact original `info` bytes, following [BEP 3](https://www.bittorrent.org/beps/bep_0003.html), without rewriting the metainfo. It supports single and multiple files; v2/hybrid and symlink entries are explicitly unsupported. Run validation with `asyncio.to_thread` in async orchestration. Parsed objects exclude raw bytes from their representations.
+
+Before `add_torrent()`, the caller must claim the user-confirmed selection and persist the validated hash with `begin_submission()`. The adapter revalidates the bytes against `expected_info_hash`, submits base64 metainfo (never a file path or URL), and verifies the returned hash, ID, and name. Results distinguish `ADDED`, `DUPLICATE`, and `FOUND`. `FOUND` means a lookup confirmed presence after an ambiguous add; whether that attempt created a new torrent remains unknown.
+
+An add timeout, lost response, malformed result, or unexpected HTTP failure triggers a hash lookup, never an automatic add replay. A match returns `FOUND`; absence or a failed lookup raises `SubmissionUncertain`. An immediate empty lookup does not prove the original request cannot still finish. The same client blocks another add of that hash while unresolved, allowing only reconciliation. Step 6 must persist uncertainty across restarts, handle cancelled adds conservatively, and reconcile before considering another confirmed submission. Explicit RPC rejection or denied authentication raises a safe error without add replay.
+
+Diagnostics contain operation names, IDs, HTTP statuses, hash/outcome metadata, and safe error types. They omit authentication headers, session tokens, metainfo, tracker passkeys, download paths, raw RPC errors, and torrent names. Tests use synthetic torrents and an ephemeral local fake daemon. Live checks used only session information and a missing-hash lookup; no real torrent was downloaded or submitted.
 
 ## Telegram conversation
 

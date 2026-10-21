@@ -42,7 +42,9 @@ Validation: handler tests covering authentication, CAPTCHA, search, numeric sele
 
 Inspect the target Transmission version and support its RPC protocol. Implement session negotiation, optional authentication, torrent submission, duplicate detection, and torrent lookup by info hash. Validate torrent data and derive its identity before submission. Reconcile timeout outcomes before permitting retries. Support an optional download directory.
 
-Validation: mocked RPC tests for acceptance, duplicates, session negotiation, failures, and timeout reconciliation. Any live submission requires explicit test authorization.
+Implementation checkpoint: standalone client and v1 torrent validator implemented; target Transmission 4.1.3/API 6.0.1 verified with read-only RPC calls. JSON-RPC API 6.x and legacy RPC 14–17 supported. Metainfo validation is limited to v1; v2/hybrid files are rejected explicitly. Telegram/SQLite submission orchestration belongs to step 6.
+
+Validation: synthetic metainfo and local fake-RPC tests for acceptance, duplicates, session negotiation, identity, failures, cancellation, and timeout reconciliation. Live session information and missing-hash lookup are read-only. Any live submission requires explicit test authorization.
 
 ## 6. Confirmed download and submission workflow
 

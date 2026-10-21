@@ -14,6 +14,30 @@ class ConfigurationError(ValueError):
     """Configuration is missing or invalid; messages contain field names only."""
 
 
+def validate_rpc_url(url: str) -> None:
+    """Shared validation for configuration and direct Transmission client construction."""
+    try:
+        parsed = urlsplit(url)
+        valid_url = (
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname
+            and parsed.port != 0
+            and not parsed.username
+            and not parsed.password
+            and not parsed.query
+            and not parsed.fragment
+            and not any(c.isspace() or ord(c) < 32 for c in url)
+            and parsed.path.startswith("/")
+        )
+    except ValueError:
+        valid_url = False
+    if not valid_url:
+        raise ConfigurationError(
+            "TRANSMISSION_RPC_URL must be an HTTP(S) URL with a path, "
+            "without embedded credentials, query, or fragment"
+        )
+
+
 @dataclass(frozen=True, repr=False)
 class Settings:
     telegram_bot_token: str
@@ -57,26 +81,7 @@ class Settings:
         if any(user_id >= 2**52 for user_id in allowed_ids):
             raise ConfigurationError("TELEGRAM_ALLOWED_USER_IDS contains an out-of-range ID")
         url = values.get("TRANSMISSION_RPC_URL", "http://127.0.0.1:9091/transmission/rpc")
-        try:
-            parsed = urlsplit(url)
-            valid_url = (
-                parsed.scheme in {"http", "https"}
-                and parsed.hostname
-                and parsed.port != 0
-                and not parsed.username
-                and not parsed.password
-                and not parsed.query
-                and not parsed.fragment
-                and not any(c.isspace() or ord(c) < 32 for c in url)
-                and parsed.path.startswith("/")
-            )
-        except ValueError:
-            valid_url = False
-        if not valid_url:
-            raise ConfigurationError(
-                "TRANSMISSION_RPC_URL must be an HTTP(S) URL with a path, "
-                "without embedded credentials, query, or fragment"
-            )
+        validate_rpc_url(url)
         username = values.get("TRANSMISSION_USERNAME") or None
         password = values.get("TRANSMISSION_PASSWORD") or None
         if (username is None) != (password is None):
