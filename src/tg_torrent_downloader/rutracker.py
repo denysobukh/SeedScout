@@ -83,9 +83,17 @@ class CaptchaUnavailable(RuTrackerError):
 
 
 @dataclass(frozen=True)
+class TopicBlock:
+    text: str
+    expandable: bool = False
+
+
+@dataclass(frozen=True)
 class TopicDetails:
     result: TorrentResult
     description: str
+    poster_url: str | None = None
+    blocks: tuple[TopicBlock, ...] = ()
 
 
 @dataclass(frozen=True, repr=False)
@@ -325,6 +333,45 @@ def _display_url(value: str, base: str) -> str | None:
     return None
 
 
+def _image_url(node: Tag, base: str) -> str | None:
+    attributes = ("data-src", "src") if node.name == "img" else ("title", "data-src")
+    for attribute in attributes:
+        value = node.get(attribute)
+        if isinstance(value, str) and (url := _display_url(value, base)):
+            return url
+    return None
+
+
+def _topic_blocks(description: Tag) -> tuple[TopicBlock, ...]:
+    """Keep outer spoiler boundaries; flatten nested spoilers into their outer quote."""
+    containers, selected = [], set()
+    for node in description.select(".sp-wrap, .sp-body"):
+        if any(id(parent) in selected for parent in node.parents):
+            continue
+        if "sp-wrap" in node.get("class", []) and node.select_one(".sp-body") is None:
+            continue
+        containers.append(node)
+        selected.add(id(node))
+    markers = {}
+    for node in containers:
+        content = node.get_text("\n", strip=True)
+        marker = f"SEEDSCOUT_SPOILER_{uuid4().hex}"
+        markers[marker] = content
+        node.replace_with(marker)
+    text = description.get_text("\n", strip=True)
+    if not markers:
+        return (TopicBlock(text),) if text else ()
+    pattern = "(" + "|".join(re.escape(marker) for marker in markers) + ")"
+    blocks = []
+    for part in re.split(pattern, text):
+        if part in markers:
+            if markers[part]:
+                blocks.append(TopicBlock(markers[part], expandable=True))
+        elif part.strip():
+            blocks.append(TopicBlock(part.strip()))
+    return tuple(blocks)
+
+
 def parse_topic(response: _Response, result: TorrentResult) -> TopicDetails:
     page = _soup(response)
     _require_session(page)
@@ -339,21 +386,46 @@ def parse_topic(response: _Response, result: TorrentResult) -> TopicDetails:
         raise UnexpectedPage("RuTracker release description format has changed")
     for node in description.select("script, style, form, iframe"):
         node.decompose()
-    # Convert links/images to safe plain text; never execute markup or fetch embedded media.
+    # Lazy postImg placeholders are used by RuTracker before its JavaScript loads images.
+    images = list(description.select("var.postImg, img"))
+    poster_node, poster_url = None, None
+    preferred = [
+        node for node in images if node.name == "var" or "postImg" in node.get("class", [])
+    ]
+    preferred_ids = {id(node) for node in preferred}
+    candidates = preferred + [node for node in images if id(node) not in preferred_ids]
+    for node in candidates:
+        if any(
+            {"sp-body", "sp-head"}.intersection(parent.get("class", []))
+            for parent in node.parents
+            if isinstance(parent, Tag)
+        ):
+            continue
+        if url := _image_url(node, result.topic_url):
+            poster_node, poster_url = node, url
+            break
+    for image in images:
+        url = _image_url(image, result.topic_url)
+        if image is poster_node or url is None:
+            image.decompose()
+        else:
+            image.replace_with(f"[Image: {url}]")
+    # Preserve safe links and screenshot URLs; do not execute markup or fetch embedded media.
     for link in description.select("a[href]"):
         url = _display_url(str(link["href"]), result.topic_url)
         label = link.get_text(" ", strip=True)
-        link.replace_with(f"{label} ({url})" if url and label and label != url else url or label)
-    for image in description.select("img"):
-        url = _display_url(str(image.get("src", "")), result.topic_url)
-        if url:
-            image.replace_with(f"[Image: {url}]")
+        # Preserve spoiler markup when an unusual link wraps an entire section.
+        if link.select_one(".sp-wrap, .sp-body") is not None:
+            link.unwrap()
         else:
-            image.decompose()
-    text = description.get_text("\n", strip=True)
-    if not text:
+            link.replace_with(
+                f"{label} ({url})" if url and label and label != url else url or label
+            )
+    blocks = _topic_blocks(description)
+    text = "\n\n".join(block.text for block in blocks)
+    if not text and not poster_url:
         raise UnexpectedPage("RuTracker release description is empty")
-    return TopicDetails(result, text)
+    return TopicDetails(result, text, poster_url, blocks)
 
 
 class RuTrackerClient:

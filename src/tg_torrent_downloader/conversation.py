@@ -35,6 +35,7 @@ from tg_torrent_downloader.rutracker import (
     InvalidCredentials,
     RuTrackerClient,
     RuTrackerError,
+    TopicBlock,
     TopicUnavailable,
     UnrecognizedSearchResults,
 )
@@ -829,8 +830,36 @@ class TelegramConversation:
             await self._results(c)
             return
         self._stage(c, "description")
+        header = f"{details.result.title}\n{details.result.topic_url}\n\n"
+        if details.poster_url:
+            try:
+                await self._call(
+                    self.bot.send_photo,
+                    chat_id=c.chat_id,
+                    photo=details.poster_url,
+                    parse_mode=None,
+                )
+            except TelegramAPIError as error:
+                diagnostic_event(
+                    "telegram.poster.unavailable",
+                    user_id=c.user_id,
+                    chat_id=c.chat_id,
+                    topic_id=details.result.topic_id,
+                    error=type(error).__name__,
+                )
+                header += f"Poster: {details.poster_url}\n\n"
+        blocks = details.blocks or (TopicBlock(details.description),)
+        offset, entities = len(header.encode("utf-16-le")) // 2, []
+        for block in blocks:
+            length = len(block.text.encode("utf-16-le")) // 2
+            if block.expandable and length:
+                entities.append(
+                    MessageEntity(type="expandable_blockquote", offset=offset, length=length)
+                )
+            offset += length + 2
         await self._screen(
             c,
-            f"{details.result.title}\n{details.result.topic_url}\n\n{details.description}",
+            header + "\n\n".join(block.text for block in blocks),
             ("download", "back"),
+            entities=entities,
         )

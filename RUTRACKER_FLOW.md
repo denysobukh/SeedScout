@@ -55,7 +55,8 @@ D. **Active Transmission downloads**
    - /search → 4. /cancel → stop. Pagination is deferred.
 7. **Open selected torrent topic**
    - Follow its stored RuTracker topic link; retrieve the full release description.
-   - Show the description as safe text, retaining useful links, split across Telegram messages when needed; include the source link.
+   - Send the first post’s poster image above the description when available, recognizing ordinary and lazy post-image markup and skipping spoiler screenshots as poster candidates. Failed photo delivery falls back to a poster link; a missing poster does not block details.
+   - Show the full description as safe text and map each collapsible section to a native expandable quote retaining its heading (Наличие серий в раздаче, Media info, Скриншоты, etc.). Keep screenshot image URLs as links inside the quote, flatten nested spoilers into the outer quote, and preserve quote entities across UTF-16-safe message splits. Include the source link and put Download/Back only on the final message.
    - Offer only Download and Back → 8; omit New search and Cancel buttons. Every nonempty text input, including numbers and unknown slash-prefixed strings, starts a new search → 5 unchanged. /start, /search, /status, /help, and /cancel retain their command behavior.
    - Topic unavailable → explain, return to 6.
    - Session expired → 2–3, then retry 7 with the saved topic.

@@ -18,6 +18,7 @@ from tg_torrent_downloader.rutracker import (
     CaptchaExpired,
     InvalidCredentials,
     NetworkError,
+    TopicBlock,
     TopicDetails,
     TopicUnavailable,
     UnrecognizedSearchResults,
@@ -1268,6 +1269,85 @@ def test_start_login_check_handles_missing_invalid_offline_and_captcha(tmp_path,
                 assert h.store.get_credentials(1) is None
             await h.click("downloads")
             assert h.state.stage == "downloads"
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("photo_fails", [False, True])
+def test_detail_poster_precedes_description_and_preserves_controls(h, monkeypatch, photo_fails):
+    async def run():
+        await h.search()
+        result = h.state.search.results[0]
+        h.client.topic_outcomes = [
+            TopicDetails(result, "Main description", "https://example.com/poster.jpg")
+        ]
+        order = []
+        send_photo, send_message = h.bot.send_photo, h.bot.send_message
+
+        async def photo(**kwargs):
+            order.append("photo")
+            if photo_fails:
+                raise TelegramBadRequest(
+                    method=AnswerCallbackQuery(callback_query_id="photo"), message="wrong photo"
+                )
+            await send_photo(**kwargs)
+
+        async def text(**kwargs):
+            order.append("text")
+            await send_message(**kwargs)
+
+        monkeypatch.setattr(h.bot, "send_photo", photo)
+        monkeypatch.setattr(h.bot, "send_message", text)
+        await h.click("1")
+        assert order == ["text", "photo", "text"]
+        assert h.state.stage == "description" and h.state.actions == ("download", "back")
+        assert "Main description" in h.bot.messages[-1]["text"]
+        if photo_fails:
+            assert "Poster: https://example.com/poster.jpg" in h.bot.messages[-1]["text"]
+        else:
+            assert h.bot.photos[-1]["photo"] == "https://example.com/poster.jpg"
+        assert not h.rpc.adds and not h.client.downloads
+        await h.click("Back")
+        assert h.state.stage == "results"
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_long_expandable_detail_sections_keep_full_text_and_valid_entities(h):
+    async def run():
+        await h.search()
+        result = h.state.search.results[0]
+        blocks = (
+            TopicBlock("Intro 🙂 <literal>"),
+            TopicBlock("Media info\n" + "Technical 🙂 data\n" * 500, True),
+            TopicBlock("Скриншоты\nhttps://example.com/shot.jpg", True),
+            TopicBlock("After sections"),
+        )
+        description = "\n\n".join(block.text for block in blocks)
+        h.client.topic_outcomes = [TopicDetails(result, description, blocks=blocks)]
+        before = len(h.bot.messages)
+        await h.click("1")
+        responses = h.bot.messages[before + 1 :]
+        assert description in "".join(item["text"] for item in responses)
+        quoted = []
+        for item in responses:
+            assert len(item["text"].encode("utf-16-le")) // 2 <= 4000
+            encoded = item["text"].encode("utf-16-le")
+            for entity in item.get("entities") or []:
+                assert entity.type == "expandable_blockquote"
+                assert 0 <= entity.offset < entity.offset + entity.length <= len(encoded) // 2
+                quoted.append(
+                    encoded[entity.offset * 2 : (entity.offset + entity.length) * 2].decode(
+                        "utf-16-le"
+                    )
+                )
+        assert "".join(quoted) == blocks[1].text + blocks[2].text
+        assert all(item["reply_markup"] is None for item in responses[:-1])
+        assert responses[-1]["reply_markup"] is not None
+        await h.send("another query")
+        assert h.state.stage == "results" and h.client.queries[-1] == "another query"
         await h.flow.close()
 
     asyncio.run(run())

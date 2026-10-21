@@ -125,11 +125,14 @@ def test_search_rejects_external_topic_links():
 def test_topic_full_description_includes_spoilers_links_and_images_but_not_replies():
     details = parse_topic(page("topic"), TorrentResult(21, "Selected release"))
     assert details.result.topic_id == 21
+    assert details.poster_url == "https://example.com/poster.png"
+    assert any(
+        block.expandable and "Hidden technical details" in block.text for block in details.blocks
+    )
     for text in (
         "Full description",
         "Hidden technical details",
         "https://example.com/info",
-        "https://example.com/poster.png",
         "Unsafe link label",
     ):
         assert text in details.description
@@ -753,3 +756,65 @@ def test_seed_sort_preserves_ties_and_places_unknown_counts_after_zero():
     )
     assert [result.topic_id for result in results] == [5, 1, 4, 3, 2, 6]
     assert [result.seeds for result in results] == [7, 5, 5, 0, None, None]
+
+
+def test_topic_lazy_poster_and_named_nested_spoilers_preserve_order():
+    html = """<div class="post_body"><var class="postImg img-right" title="https://example.com/poster.jpg"></var>
+    <p>Intro &amp; story 🙂</p>
+    <div class="sp-wrap"><div class="sp-head">Наличие серий в раздаче</div>
+    <div class="sp-body">Episodes 1–3</div></div>
+    <p>Between sections</p>
+    <div class="sp-wrap"><div class="sp-head">Media info</div><div class="sp-body">Codec details
+      <div class="sp-wrap"><div class="sp-head">Nested</div>
+      <div class="sp-body">Nested text</div></div>
+    </div></div>
+    <div class="sp-wrap"><div class="sp-head">Скриншоты</div><div class="sp-body">
+      <var class="postImg" title="https://example.com/shot.jpg"></var></div></div>
+    <p>After sections</p></div><div class="post_body">Reply ignored</div>"""
+    details = parse_topic(
+        _Response(html.encode(), "text/html", "utf-8"), TorrentResult(21, "Title")
+    )
+    assert details.poster_url == "https://example.com/poster.jpg"
+    assert [block.expandable for block in details.blocks] == [False, True, False, True, True, False]
+    quotes = [block.text for block in details.blocks if block.expandable]
+    assert quotes[0].startswith("Наличие серий в раздаче") and "Episodes 1–3" in quotes[0]
+    assert "Media info" in quotes[1] and "Nested text" in quotes[1]
+    assert "https://example.com/shot.jpg" in quotes[2]
+    assert (
+        "Reply ignored" not in details.description
+        and "SEEDSCOUT_SPOILER" not in details.description
+    )
+    assert details.description == "\n\n".join(block.text for block in details.blocks)
+
+
+def test_screenshot_inside_spoiler_is_not_selected_as_poster():
+    html = (
+        b'<div class="post_body"><div class="sp-wrap"><div class="sp-head">Screenshots</div>'
+        b'<div class="sp-body"><img src="https://example.com/shot.jpg"></div></div></div>'
+    )
+    details = parse_topic(_Response(html, "text/html", "utf-8"), TorrentResult(21, "Title"))
+    assert details.poster_url is None
+    assert details.blocks[0].expandable and "shot.jpg" in details.blocks[0].text
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["javascript:alert(1)", "https://user:password@example.com/poster.jpg", "https://[broken"],
+)
+def test_unsafe_posters_are_omitted(url):
+    html = f'<div class="post_body"><var class="postImg" title="{url}"></var><p>Text</p></div>'
+    details = parse_topic(
+        _Response(html.encode(), "text/html", "utf-8"), TorrentResult(21, "Title")
+    )
+    assert details.poster_url is None and details.description == "Text"
+
+
+def test_poster_only_topic_and_post_image_preferred_over_decorative_image():
+    html = b'<div class="post_body"><var class="postImg" title="https://example.com/poster.jpg"></var></div>'
+    result = TorrentResult(21, "Title")
+    details = parse_topic(_Response(html, "text/html", "utf-8"), result)
+    assert details.poster_url == "https://example.com/poster.jpg" and details.description == ""
+    html = html.replace(b"<var ", b'<img src="https://example.com/icon.gif"><var ')
+    details = parse_topic(_Response(html, "text/html", "utf-8"), result)
+    assert details.poster_url == "https://example.com/poster.jpg"
+    assert "icon.gif" in details.description
