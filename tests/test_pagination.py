@@ -169,4 +169,19 @@ def test_v3_migration_preserves_existing_credentials_and_selection(state):
     assert store.get_credentials(1) == pair
     assert store.get_selection(selection.id, 1, 10) == selection
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+
+
+def test_total_pages_rounds_partial_page_and_persists_across_batches(state):
+    store, _ = state
+    session = store.save_search_session(
+        1, 10, "query", SearchBatch(rows(1, 50), next_offset=50, total_results=123)
+    )
+    assert session.total_pages == 13
+    restored = WorkflowStore(store.path, clock=store.clock)
+    restored.initialize()
+    assert restored.get_search_session(session.id, 1, 10).total_pages == 13
+    continued = restored.append_search_batch(session.id, 1, 10, SearchBatch(rows(51, 100), 50, 100))
+    assert continued.total_results == 123 and continued.total_pages == 13
+    final = restored.append_search_batch(session.id, 1, 10, SearchBatch(rows(101, 123), 100))
+    assert final.total_pages == 13

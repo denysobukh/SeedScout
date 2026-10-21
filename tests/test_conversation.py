@@ -194,7 +194,10 @@ class Harness:
             if markup:
                 for row in markup.inline_keyboard:
                     for button in row:
-                        if button.text == text and self.state.token in button.callback_data:
+                        if (
+                            button.text == text
+                            or (text.isdecimal() and button.callback_data.endswith(f":pick{text}"))
+                        ) and self.state.token in button.callback_data:
                             return button.callback_data
         raise AssertionError(f"No active {text} button")
 
@@ -249,12 +252,13 @@ def test_query_is_unchanged_and_first_ten_results_are_numbered(h):
         assert len(results) == 10
         for index, item in enumerate(results, 1):
             assert item["text"] == f"{index}. Release {index}\n1 GB · Seeds: 2"
-            assert item["reply_markup"] is None
-        assert (
-            h.bot.messages[-1]["text"]
-            == "Page 1\nChoose a numbered button or send a new search query."
-        )
-        assert h.bot.messages[-1]["reply_markup"] is not None
+            assert [b.text for b in item["reply_markup"].inline_keyboard[0]] == [
+                "Details",
+                "Download",
+                "Sequential Download",
+            ]
+        assert h.bot.messages[-1]["text"] == "Page 1 / 1"
+        assert h.bot.messages[-1]["reply_markup"] is None
 
     asyncio.run(run())
 
@@ -627,14 +631,20 @@ def test_cancel_marks_pending_selection_cancelled_and_closes_client(h):
     asyncio.run(run())
 
 
-def test_results_have_only_one_numbered_button_per_displayed_torrent(h):
+def test_results_have_actions_under_each_displayed_torrent(h):
     async def run():
         h.next_client.results = h.next_client.results[:3]
         await h.search()
-        markup = h.bot.messages[-1]["reply_markup"]
-        buttons = [button for row in markup.inline_keyboard for button in row]
-        assert [button.text for button in buttons] == ["1", "2", "3"]
-        assert all(len(button.callback_data.encode()) <= 64 for button in buttons)
+        for index, item in enumerate(h.bot.messages[-4:-1], 1):
+            buttons = item["reply_markup"].inline_keyboard[0]
+            assert [b.text for b in buttons] == ["Details", "Download", "Sequential Download"]
+            assert [b.callback_data.split(":")[-1] for b in buttons] == [
+                f"pick{index}",
+                f"get{index}",
+                f"seq{index}",
+            ]
+            assert all(len(b.callback_data.encode()) <= 64 for b in buttons)
+        assert h.bot.messages[-1]["reply_markup"] is None
         await h.click("3")
         assert h.client.topics[-1].topic_id == 3
         assert h.state.stage == "description"
@@ -642,14 +652,19 @@ def test_results_have_only_one_numbered_button_per_displayed_torrent(h):
     asyncio.run(run())
 
 
-def test_ten_result_buttons_are_arranged_in_two_rows(h):
+@pytest.mark.parametrize("prefix, sequential", [("get", False), ("seq", True)])
+def test_result_row_download_submits_its_own_torrent(h, prefix, sequential):
     async def run():
         await h.search()
-        rows = h.bot.messages[-1]["reply_markup"].inline_keyboard
-        assert [[button.text for button in row] for row in rows] == [
-            ["1", "2", "3", "4", "5"],
-            ["6", "7", "8", "9", "10"],
-        ]
+        data = f"sc:{h.state.token}:{prefix}3"
+        await h.flow.handle_callback(callback(data))
+        assert h.client.downloads == [3]
+        assert h.client.topics == []
+        assert h.rpc.sequential_adds == [sequential]
+        assert h.bot.messages[-1]["text"] == "Accepted by Transmission."
+        await h.flow.handle_callback(callback(data))
+        assert "expired" in h.bot.answers[-1]["text"]
+        assert len(h.rpc.adds) == 1
 
     asyncio.run(run())
 
@@ -660,11 +675,12 @@ def test_new_query_from_description_invalidates_previous_controls(h, query):
         await h.search()
         await h.click("2")
         old = h.button("Download")
-        assert h.state.actions == ("download", "back")
+        assert h.state.actions == ("back", "download", "sequential")
         markup = h.bot.messages[-1]["reply_markup"]
         assert [button.text for row in markup.inline_keyboard for button in row] == [
-            "Download",
             "Back",
+            "Download",
+            "Sequential download",
         ]
         await h.send(query)
         assert h.client.queries == ["ubuntu", query]
@@ -974,14 +990,15 @@ def test_download_rejection_is_safe_and_avoids_secret_logging(h, caplog):
     asyncio.run(run())
 
 
-def test_confirmed_download_survives_replacing_rejected_login(h):
+@pytest.mark.parametrize("label", ["Download", "Sequential download"])
+def test_confirmed_download_survives_replacing_rejected_login(h, label):
     async def run():
         await h.search()
         await h.click("1")
         selected = h.state.selected
         h.client.download_outcomes = [AuthenticationRequired("expired")]
         h.client.auth_outcomes = [InvalidCredentials("rejected")]
-        await h.click("Download")
+        await h.click(label)
         assert h.state.stage == "login" and h.state.download_claim is not None
         assert not h.rpc.adds
         await h.send("replacement-user")
@@ -989,6 +1006,7 @@ def test_confirmed_download_survives_replacing_rejected_login(h):
         assert h.state.selected.id == selected.id
         assert h.state.selected.status == SelectionStatus.ACCEPTED
         assert h.client.downloads == [1] and len(h.rpc.adds) == 1
+        assert h.rpc.sequential_adds == [label == "Sequential download"]
 
     asyncio.run(run())
 
@@ -1326,7 +1344,11 @@ def test_detail_poster_precedes_description_and_preserves_controls(h, monkeypatc
         monkeypatch.setattr(h.bot, "send_message", text)
         await h.click("1")
         assert order == ["text", "photo", "text"]
-        assert h.state.stage == "description" and h.state.actions == ("download", "back")
+        assert h.state.stage == "description" and h.state.actions == (
+            "back",
+            "download",
+            "sequential",
+        )
         assert "Main description" in h.bot.messages[-1]["text"]
         if photo_fails:
             assert "Poster: https://example.com/poster.jpg" in h.bot.messages[-1]["text"]
@@ -1589,5 +1611,34 @@ def test_rejected_login_during_paging_resumes_same_cursor_with_new_credentials(h
         assert h.state.search.results[0].topic_id == 11
         assert h.store.get_credentials(1).username == "replacement-user"
         await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("label, sequential", [("Download", False), ("Sequential download", True)])
+def test_download_mode_from_details(h, label, sequential):
+    async def run():
+        await h.search()
+        await h.send("1")
+        assert h.state.actions == ("back", "download", "sequential")
+        await h.click(label)
+        assert h.rpc.sequential_adds == [sequential]
+        assert h.bot.messages[-1]["text"] == "Accepted by Transmission."
+
+    asyncio.run(run())
+
+
+def test_result_page_total_uses_reported_count_and_survives_back(h):
+    async def run():
+        first = tuple(TorrentResult(i, f"Release {i}") for i in range(1, 51))
+        h.next_client.batch_outcomes = {0: [SearchBatch(first, next_offset=50, total_results=123)]}
+        await h.search()
+        assert h.bot.messages[-1]["text"] == "Page 1 / 13"
+        await h.click("next")
+        assert h.bot.messages[-1]["text"] == "Page 2 / 13"
+        await h.click("1")
+        await h.click("Back")
+        assert h.bot.messages[-1]["text"] == "Page 2 / 13"
+        assert h.client.batch_calls == [("ubuntu", 0)]
 
     asyncio.run(run())

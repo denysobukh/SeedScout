@@ -60,7 +60,7 @@ _HELP = (
     "/search — new search\n/status — check recent downloads\n"
     "/cancel — stop the current bot operation\n/help — this guide\n\n"
     "Enter your RuTracker login and password when prompted, then solve any login CAPTCHA. "
-    "Send your query, then choose a numbered button or type its number. "
+    "Send your query, then use Details, Download, or Sequential Download below a result. "
     "Send other text to search again. "
     "Download confirms sending the selected torrent to Transmission. Back restores the same list."
 )
@@ -77,6 +77,7 @@ _LABELS = {
     "retry": "Retry",
     "back": "Back",
     "download": "Download",
+    "sequential": "Sequential download",
 }
 
 
@@ -118,6 +119,7 @@ class Conversation:
     pending_page: int | None = None
     selected: Selection | None = None
     download_claim: Selection | None = None
+    sequential_download: bool = False
     resume: str = "query"
     task: asyncio.Task | None = None
 
@@ -200,35 +202,29 @@ class TelegramConversation:
             offset = end
 
     def _keyboard(
-        self, conversation: Conversation, actions: tuple[str, ...]
+        self, conversation: Conversation, actions: tuple[str, ...], *, refresh: bool = True
     ) -> InlineKeyboardMarkup | None:
-        conversation.token = uuid4().hex
-        conversation.actions = actions
+        if refresh:
+            conversation.token = uuid4().hex
+            conversation.actions = actions
         buttons = [
             InlineKeyboardButton(
-                text=_LABELS.get(action, action.removeprefix("pick")),
+                text=(
+                    "Details"
+                    if action.startswith("pick")
+                    else "Download"
+                    if action.startswith("get")
+                    else "Sequential Download"
+                    if action.startswith("seq") and action != "sequential"
+                    else _LABELS.get(action, action)
+                ),
                 callback_data=f"sc:{conversation.token}:{action}",
             )
             for action in actions
         ]
         if not buttons:
             return None
-        if any(action.startswith("pick") for action in actions):
-            numeric = [
-                button
-                for action, button in zip(actions, buttons, strict=True)
-                if action.startswith("pick")
-            ]
-            navigation = [
-                button
-                for action, button in zip(actions, buttons, strict=True)
-                if not action.startswith("pick")
-            ]
-            rows = [numeric[i : i + 5] for i in range(0, len(numeric), 5)]
-            if navigation:
-                rows.append(navigation)
-        else:
-            rows = [buttons[i : i + 5] for i in range(0, len(buttons), 5)]
+        rows = [buttons[i : i + 5] for i in range(0, len(buttons), 5)]
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def _stage(self, conversation: Conversation, stage: str) -> None:
@@ -483,8 +479,15 @@ class TelegramConversation:
         elif action in {"next", "prev"}:
             target = c.search_session.current_page + (1 if action == "next" else -1)
             await self._navigate(c, target)
-        elif action.startswith("pick"):
-            await self._select_result(c, int(action[4:]) - 1)
+        elif action.startswith(("pick", "get", "seq")) and action != "sequential":
+            if action.startswith("pick"):
+                await self._select_result(c, int(action[4:]) - 1)
+            else:
+                c.selected = await database_call(
+                    self.store.select, c.search.id, int(action[3:]) - 1, c.user_id, c.chat_id
+                )
+                c.sequential_download = action.startswith("seq")
+                await self._download(c)
         elif action == "new":
             await self._abandon_download(c)
             c.query, c.search, c.selected = "", None, None
@@ -503,7 +506,8 @@ class TelegramConversation:
                 await self._download(c)
             else:
                 await self._authenticate(c, c.resume if c.resume == "menu" else "query")
-        elif action == "download":
+        elif action in {"download", "sequential"}:
+            c.sequential_download = action == "sequential"
             await self._download(c)
 
     async def _menu(self, c: Conversation, *, startup: bool = False) -> None:
@@ -681,6 +685,7 @@ class TelegramConversation:
                 c.chat_id,
                 client.download_torrent,
                 resume_claim=c.download_claim,
+                sequential=c.sequential_download,
             )
         except DownloadAuthenticationRequired as error:
             c.download_claim = error.selection
@@ -886,31 +891,37 @@ class TelegramConversation:
                 self.store.get_search_session, c.search_session.id, c.user_id, c.chat_id
             )
         self._stage(c, "results")
-        self._keyboard(c, ())  # Old controls stay invalid even if sending a row fails.
+        row_actions = tuple(
+            (f"pick{index}", f"get{index}", f"seq{index}")
+            for index in range(1, len(c.search.results) + 1)
+        )
+        navigation = ()
+        page = c.search_session.current_page if c.search_session else 1
+        if page > 1:
+            navigation += ("prev",)
+        if c.search_session and c.search_session.has_next:
+            navigation += ("next",)
+        if retry:
+            navigation += ("retry",)
+        self._keyboard(c, tuple(action for row in row_actions for action in row) + navigation)
         for index, result in enumerate(c.search.results, 1):
             metadata = []
             if result.size:
                 metadata.append(result.size)
             if result.seeds is not None:
                 metadata.append(f"Seeds: {result.seeds}")
+            buttons = self._keyboard(c, row_actions[index - 1], refresh=False)
             await self._text(
                 c.chat_id,
                 f"{index}. {result.title}" + ("\n" + " · ".join(metadata) if metadata else ""),
+                buttons,
             )
-        actions = tuple(f"pick{index}" for index in range(1, len(c.search.results) + 1))
-        page = c.search_session.current_page if c.search_session else 1
-        if page > 1:
-            actions += ("prev",)
-        if c.search_session and c.search_session.has_next:
-            actions += ("next",)
-        if retry:
-            actions += ("retry",)
-        await self._screen(
-            c,
-            f"Page {page}\n"
-            + (note + "\n" if note else "")
-            + "Choose a numbered button or send a new search query.",
-            actions,
+        total_pages = c.search_session.total_pages if c.search_session else 1
+        await self._text(
+            c.chat_id,
+            f"Page {page} / {total_pages if total_pages is not None else '?'}"
+            + ("\n" + note if note else ""),
+            self._keyboard(c, navigation, refresh=False),
         )
 
     async def _topic(self, c: Conversation, *, reauthenticate: bool = True) -> None:
@@ -961,6 +972,6 @@ class TelegramConversation:
         await self._screen(
             c,
             header + "\n\n".join(block.text for block in blocks),
-            ("download", "back"),
+            ("back", "download", "sequential"),
             entities=entities,
         )

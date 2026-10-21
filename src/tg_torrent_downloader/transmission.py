@@ -374,7 +374,9 @@ class TransmissionClient:
         diagnostic_event("transmission.reconciled", info_hash=info_hash)
         return AddResult(AddStatus.FOUND, torrent)
 
-    async def add_torrent(self, data: bytes, *, expected_info_hash: str) -> AddResult:
+    async def add_torrent(
+        self, data: bytes, *, expected_info_hash: str, sequential: bool = False
+    ) -> AddResult:
         """Validate and add bytes after the caller persists the confirmed selection/hash.
 
         Never automatically replay an ambiguous add. FOUND confirms presence only, without
@@ -393,6 +395,12 @@ class TransmissionClient:
             args = {"metainfo": base64.b64encode(torrent.data).decode("ascii")}
             if self._download_dir is not None:
                 args["download_dir" if modern else "download-dir"] = self._download_dir
+            if sequential:
+                if self._info.rpc_version < 18:
+                    raise UnsupportedTransmission(
+                        "Sequential downloads require Transmission 4.1 or later"
+                    )
+                args["sequential_download" if modern else "sequential-download"] = True
             self._uncertain.add(expected_info_hash)
             try:
                 result = await self._rpc("torrent-add", args)

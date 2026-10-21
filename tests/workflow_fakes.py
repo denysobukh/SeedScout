@@ -18,6 +18,7 @@ HASH = hashlib.sha1(INFO, usedforsecurity=False).hexdigest()
 class FakeTransmission:
     def __init__(self):
         self.adds, self.lookups = [], []
+        self.sequential_adds = []
         self.closed = False
         self.status = AddStatus.ADDED
         self.add_error = self.connect_error = self.lookup_error = None
@@ -41,7 +42,8 @@ class FakeTransmission:
             raise self.connect_error
         return TransmissionInfo("4.1.3", 19, True)
 
-    async def add_torrent(self, data, *, expected_info_hash):
+    async def add_torrent(self, data, *, expected_info_hash, sequential=False):
+        self.sequential_adds.append(sequential)
         self.adds.append((data, expected_info_hash))
         if self.before_add:
             self.before_add()

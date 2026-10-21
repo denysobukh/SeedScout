@@ -147,9 +147,12 @@ class WorkflowStore:
                 for statement in _PAGINATION_SCHEMA:
                     db.execute(statement)
                 version = 4
-            if version != 4:
+            if version == 4:
+                db.execute("ALTER TABLE search_sessions ADD COLUMN total_results INTEGER")
+                version = 5
+            if version != 5:
                 raise StateError("Unsupported workflow database schema version")
-            db.execute("PRAGMA user_version = 4")
+            db.execute("PRAGMA user_version = 5")
 
     @contextmanager
     def runtime_lock(self) -> Iterator[None]:
@@ -318,10 +321,11 @@ class WorkflowStore:
             1,
             now,
             now + ttl_seconds,
+            batch.total_results,
         )
         with self._transaction() as db:
             db.execute(
-                "INSERT INTO search_sessions VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO search_sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     session.id,
                     user_id,
@@ -333,6 +337,7 @@ class WorkflowStore:
                     1,
                     now,
                     session.expires_at,
+                    batch.total_results,
                 ),
             )
         return session
@@ -374,11 +379,13 @@ class WorkflowStore:
                     seen.add(result.topic_id)
             next_offset = batch.next_offset if batch.results else None
             db.execute(
-                "UPDATE search_sessions SET results=?,next_offset=?,fetched_offsets=? WHERE id=?",
+                """UPDATE search_sessions SET results=?,next_offset=?,fetched_offsets=?,
+                   total_results=COALESCE(?,total_results) WHERE id=?""",
                 (
                     json.dumps([asdict(item) for item in results]),
                     next_offset,
                     json.dumps([*session.fetched_offsets, batch.offset]),
+                    batch.total_results,
                     session_id,
                 ),
             )

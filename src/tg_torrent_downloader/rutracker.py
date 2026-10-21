@@ -340,7 +340,19 @@ def parse_search_batch(response: _Response, query: str, offset: int = 0) -> Sear
                 offsets.add(candidate)
         except RuTrackerError, ValueError, UnicodeError:
             continue
-    return SearchBatch(results, offset, min(offsets) if offsets else None)
+    total_results = None
+    # RuTracker reports the search count independently of its server-page size.
+    count = re.search(
+        r"(?:Торрентов|Результатов\s+поиска|Найдено(?:\s+(?:торрентов|результатов))?)"
+        r"\s*:?\s*([0-9]+(?:[ \xa0\u202f][0-9]{3})*)",
+        page.get_text(" ", strip=True),
+        re.IGNORECASE,
+    )
+    if count:
+        total_results = int(re.sub(r"\s", "", count[1]))
+        if total_results < offset + len(results):
+            total_results = None
+    return SearchBatch(results, offset, min(offsets) if offsets else None, total_results)
 
 
 def _display_url(value: str, base: str) -> str | None:

@@ -140,7 +140,8 @@ class Daemon:
 
 @pytest.mark.parametrize("modern", [True, False])
 @pytest.mark.parametrize("duplicate", [True, False])
-def test_negotiation_submission_duplicates_and_optional_directory(modern, duplicate):
+@pytest.mark.parametrize("sequential", [True, False])
+def test_negotiation_submission_duplicates_and_optional_directory(modern, duplicate, sequential):
     async def run():
         daemon = Daemon(modern=modern)
         daemon.duplicate = duplicate
@@ -148,7 +149,14 @@ def test_negotiation_submission_duplicates_and_optional_directory(modern, duplic
             async with TransmissionClient(url, download_dir="/remote/downloads") as client:
                 info = await client.session_info()
                 assert info.modern is modern and info.rpc_version == daemon.rpc_version
-                result = await client.add_torrent(DATA, expected_info_hash=HASH.upper())
+                if sequential and not modern:
+                    with pytest.raises(UnsupportedTransmission):
+                        await client.add_torrent(DATA, expected_info_hash=HASH, sequential=True)
+                    assert daemon.adds == 0
+                    return
+                result = await client.add_torrent(
+                    DATA, expected_info_hash=HASH.upper(), sequential=sequential
+                )
                 assert result.status == (AddStatus.DUPLICATE if duplicate else AddStatus.ADDED)
                 assert (result.torrent.id, result.torrent.name, result.torrent.info_hash) == (
                     7,
@@ -164,6 +172,10 @@ def test_negotiation_submission_duplicates_and_optional_directory(modern, duplic
         args = payload["params" if modern else "arguments"]
         assert base64.b64decode(args["metainfo"]) == DATA
         assert args["download_dir" if modern else "download-dir"] == "/remote/downloads"
+        if sequential:
+            assert args["sequential_download" if modern else "sequential-download"] is True
+        else:
+            assert "sequential_download" not in args and "sequential-download" not in args
         assert "filename" not in args
         assert daemon.adds == 1
 

@@ -132,6 +132,7 @@ class DownloadWorkflow:
         fetch: Callable[[int], Awaitable[bytes]],
         *,
         resume_claim: Selection | None = None,
+        sequential: bool = False,
     ) -> DownloadOutcome:
         """Only an owned, live confirmation or its in-memory authentication resume may fetch."""
         token = resume_claim.claim_token if resume_claim else uuid4().hex
@@ -174,7 +175,9 @@ class DownloadWorkflow:
                     selected = await database_call(
                         self.store.begin_submission, selection_id, token, torrent.info_hash
                     )
-                    result = await rpc.add_torrent(data, expected_info_hash=torrent.info_hash)
+                    result = await rpc.add_torrent(
+                        data, expected_info_hash=torrent.info_hash, sequential=sequential
+                    )
                     selected = await database_call(
                         self.store.finish,
                         selection_id,

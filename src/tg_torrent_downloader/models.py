@@ -55,8 +55,13 @@ class SearchBatch:
     results: tuple[TorrentResult, ...]
     offset: int = 0
     next_offset: int | None = None
+    total_results: int | None = None
 
     def __post_init__(self) -> None:
+        if self.total_results is not None and (
+            type(self.total_results) is not int or self.total_results < 0
+        ):
+            raise ValueError("Invalid total result count")
         if type(self.offset) is not int or not 0 <= self.offset <= 2**31 - 1:
             raise ValueError("Invalid server search offset")
         if self.next_offset is not None and (
@@ -77,6 +82,15 @@ class SearchSession:
     current_page: int
     created_at: float
     expires_at: float
+    total_results: int | None = None
+
+    @property
+    def total_pages(self) -> int | None:
+        if self.next_offset is None:
+            return max(1, (len(self.results) + 9) // 10)
+        if self.total_results is not None:
+            return max(self.current_page, (self.total_results + 9) // 10)
+        return None
 
     @property
     def has_next(self) -> bool:

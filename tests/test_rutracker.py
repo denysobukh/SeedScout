@@ -856,3 +856,25 @@ def test_search_batch_sends_original_query_sort_and_verified_server_offset():
         assert batch.offset == 50
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "count_text, expected",
+    [
+        ("Торрентов: <b>123</b>", 123),
+        ("Результатов поиска: <b>1 234</b>", 1234),
+        ("Найдено: <b>1&nbsp;234</b>", 1234),
+        ("No count", None),
+    ],
+)
+def test_search_batch_reads_total_result_count(count_text, expected):
+    from tg_torrent_downloader.rutracker import parse_search_batch
+
+    html = (
+        '<table id="tor-tbl"><tr><td><a class="tLink" href="viewtopic.php?t=1">'
+        'First</a></td></tr></table><div class="bottom_info">' + count_text + "</div>"
+        '<a href="tracker.php?nm=query&amp;start=50">Next</a>'
+    )
+    batch = parse_search_batch(_Response(html.encode(), "text/html", "utf-8"), "query")
+    assert batch.total_results == expected
+    assert batch.next_offset == 50
