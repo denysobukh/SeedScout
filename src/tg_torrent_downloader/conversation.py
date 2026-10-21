@@ -26,7 +26,14 @@ from tg_torrent_downloader.logging import (
     log_user_input,
     register_secrets,
 )
-from tg_torrent_downloader.models import RuTrackerCredentials, Search, Selection, SelectionStatus
+from tg_torrent_downloader.models import (
+    RuTrackerCredentials,
+    Search,
+    SearchSession,
+    Selection,
+    SelectionStatus,
+)
+from tg_torrent_downloader.pagination import PaginationError, load_page
 from tg_torrent_downloader.rutracker import (
     AuthenticationRequired,
     CaptchaChallenge,
@@ -45,6 +52,7 @@ from tg_torrent_downloader.workflow import (
     DownloadAuthenticationRequired,
     DownloadOutcome,
     DownloadWorkflow,
+    database_call,
 )
 
 _HELP = (
@@ -57,6 +65,8 @@ _HELP = (
     "Download confirms sending the selected torrent to Transmission. Back restores the same list."
 )
 _LABELS = {
+    "next": "next",
+    "prev": "previous",
     "results": "search results",
     "reload": "reload",
     "menu": "menu",
@@ -104,6 +114,8 @@ class Conversation:
     challenge: CaptchaChallenge | None = None
     query: str = ""
     search: Search | None = None
+    search_session: SearchSession | None = None
+    pending_page: int | None = None
     selected: Selection | None = None
     download_claim: Selection | None = None
     resume: str = "query"
@@ -201,9 +213,23 @@ class TelegramConversation:
         ]
         if not buttons:
             return None
-        return InlineKeyboardMarkup(
-            inline_keyboard=[buttons[i : i + 5] for i in range(0, len(buttons), 5)]
-        )
+        if any(action.startswith("pick") for action in actions):
+            numeric = [
+                button
+                for action, button in zip(actions, buttons, strict=True)
+                if action.startswith("pick")
+            ]
+            navigation = [
+                button
+                for action, button in zip(actions, buttons, strict=True)
+                if not action.startswith("pick")
+            ]
+            rows = [numeric[i : i + 5] for i in range(0, len(numeric), 5)]
+            if navigation:
+                rows.append(navigation)
+        else:
+            rows = [buttons[i : i + 5] for i in range(0, len(buttons), 5)]
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def _stage(self, conversation: Conversation, stage: str) -> None:
         conversation.stage = stage
@@ -454,6 +480,9 @@ class TelegramConversation:
             await self._authenticate(c, "query")
         elif action in {"downloads", "reload"}:
             await self._downloads(c)
+        elif action in {"next", "prev"}:
+            target = c.search_session.current_page + (1 if action == "next" else -1)
+            await self._navigate(c, target)
         elif action.startswith("pick"):
             await self._select_result(c, int(action[4:]) - 1)
         elif action == "new":
@@ -466,6 +495,8 @@ class TelegramConversation:
         elif action == "retry":
             if c.resume == "search":
                 await self._search(c)
+            elif c.resume == "page":
+                await self._navigate(c, c.pending_page)
             elif c.resume == "topic":
                 await self._topic(c)
             elif c.resume == "download":
@@ -484,6 +515,7 @@ class TelegramConversation:
                 # An expired selection must not prevent navigation back to menu.
                 pass
         c.query, c.search, c.selected = "", None, None
+        c.search_session, c.pending_page = None, None
         c.challenge, c.pending_username = None, None
         if c.credentials_unverified:
             c.credentials = None
@@ -666,7 +698,7 @@ class TelegramConversation:
         c.task = task
         try:
             await action
-        except (RuTrackerError, StateError, ValueError) as error:
+        except (RuTrackerError, StateError, ValueError, PaginationError) as error:
             c.challenge = None
             self._stage(c, "error")
             diagnostic_event(
@@ -770,6 +802,8 @@ class TelegramConversation:
             await self._menu(c)
         elif c.resume == "search":
             await self._search(c, reauthenticate=False)
+        elif c.resume == "page":
+            await self._navigate(c, c.pending_page, reauthenticate=False)
         elif c.resume == "topic":
             await self._topic(c, reauthenticate=False)
         elif c.resume == "download":
@@ -781,29 +815,76 @@ class TelegramConversation:
 
     async def _search(self, c: Conversation, *, reauthenticate: bool = True) -> None:
         c.resume = "search"
+        c.search_session, c.pending_page = None, None
         self._stage(c, "searching")
         await self._screen(c, "Searching RuTracker…", ())
         client = await self._client(c)
         try:
-            results = await client.search(c.query)
+            batch = await client.search_batch(c.query)
         except AuthenticationRequired:
             if not reauthenticate:
                 raise
             await self._authenticate(c, "search")
             return
-        if not results:
+        if not batch.results:
             self._stage(c, "query")
             await self._screen(c, "No matches found. Send another query.", ("new",))
             return
-        c.search = await asyncio.to_thread(
-            self.store.save_search, c.user_id, c.chat_id, c.query, results[:10]
+        c.search_session = await database_call(
+            self.store.save_search_session, c.user_id, c.chat_id, c.query, batch
         )
         c.selected = None
-        await self._results(c)
+        await self._navigate(c, 1)
 
-    async def _results(self, c: Conversation) -> None:
+    async def _navigate(
+        self,
+        c: Conversation,
+        target: int,
+        *,
+        reauthenticate: bool = True,
+    ) -> None:
+        c.resume, c.pending_page = "page", target
+        try:
+            client = await self._client(c)
+            search = await load_page(
+                self.store,
+                c.search_session.id,
+                c.user_id,
+                c.chat_id,
+                target,
+                lambda query, offset: client.search_batch(query, offset=offset),
+            )
+        except AuthenticationRequired:
+            if not reauthenticate:
+                raise
+            await self._authenticate(c, "page")
+            return
+        except (RuTrackerError, PaginationError, ValueError) as error:
+            if c.search is None:
+                raise
+            diagnostic_event(
+                "search.page.failed",
+                user_id=c.user_id,
+                chat_id=c.chat_id,
+                error=type(error).__name__,
+                page=target,
+            )
+            await self._results(
+                c, note="Could not load that page. Retry or send a new query.", retry=True
+            )
+            return
+        if search is not None:
+            c.search = search
+        c.pending_page = None
+        await self._results(c, note="No more results." if search is None else "")
+
+    async def _results(self, c: Conversation, *, note: str = "", retry: bool = False) -> None:
         c.search = await asyncio.to_thread(self.store.get_search, c.search.id, c.user_id, c.chat_id)
         c.selected = None
+        if c.search_session is not None:
+            c.search_session = await asyncio.to_thread(
+                self.store.get_search_session, c.search_session.id, c.user_id, c.chat_id
+            )
         self._stage(c, "results")
         self._keyboard(c, ())  # Old controls stay invalid even if sending a row fails.
         for index, result in enumerate(c.search.results, 1):
@@ -816,10 +897,20 @@ class TelegramConversation:
                 c.chat_id,
                 f"{index}. {result.title}" + ("\n" + " · ".join(metadata) if metadata else ""),
             )
+        actions = tuple(f"pick{index}" for index in range(1, len(c.search.results) + 1))
+        page = c.search_session.current_page if c.search_session else 1
+        if page > 1:
+            actions += ("prev",)
+        if c.search_session and c.search_session.has_next:
+            actions += ("next",)
+        if retry:
+            actions += ("retry",)
         await self._screen(
             c,
-            "Choose a numbered button or send a new search query.",
-            tuple(f"pick{index}" for index in range(1, len(c.search.results) + 1)),
+            f"Page {page}\n"
+            + (note + "\n" if note else "")
+            + "Choose a numbered button or send a new search query.",
+            actions,
         )
 
     async def _topic(self, c: Conversation, *, reauthenticate: bool = True) -> None:

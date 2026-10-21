@@ -65,7 +65,7 @@ def test_search_metadata_order_and_missing_fields():
     assert results[1].quality is None
 
 
-def test_search_sorts_all_distinct_topics_by_seeds_before_top_ten():
+def test_search_sorts_all_distinct_topics_without_truncating_server_batch():
     rows = "".join(
         f'<tr><td><a class="tLink" href="viewtopic.php?t={i}">{i}</a></td>'
         f'<td class="seedmed">{i}</td></tr>'
@@ -74,8 +74,8 @@ def test_search_sorts_all_distinct_topics_by_seeds_before_top_ten():
     result = parse_search(
         _Response(f'<table id="tor-tbl">{rows}</table>'.encode(), "text/html", "utf-8")
     )
-    assert [r.topic_id for r in result] == list(range(13, 3, -1))
-    assert [r.seeds for r in result] == list(range(13, 3, -1))
+    assert [r.topic_id for r in result] == list(range(13, 0, -1))
+    assert [r.seeds for r in result] == list(range(13, 0, -1))
 
 
 def test_empty_results_are_distinguished_from_changed_markup():
@@ -818,3 +818,41 @@ def test_poster_only_topic_and_post_image_preferred_over_decorative_image():
     details = parse_topic(_Response(html, "text/html", "utf-8"), result)
     assert details.poster_url == "https://example.com/poster.jpg"
     assert "icon.gif" in details.description
+
+
+def test_search_batch_extracts_valid_server_cursor_without_assuming_page_size():
+    from tg_torrent_downloader.rutracker import parse_search_batch
+
+    rows = (
+        '<table id="tor-tbl"><tr><td><a class="tLink" href="viewtopic.php?t=1">'
+        "First</a></td></tr></table>"
+    )
+    links = "".join(
+        f'<a href="{url}">page</a>'
+        for url in [
+            "tracker.php?nm=query&amp;o=10&amp;s=2&amp;start=75",
+            "tracker.php?nm=query&amp;start=150",
+            "tracker.php?nm=other&amp;start=5",
+            "tracker.php?nm=query&amp;o=4&amp;start=10",
+            "tracker.php?start=50&amp;start=60",
+            "https://evil.example/forum/tracker.php?start=10",
+            "viewtopic.php?t=1&amp;start=10",
+            "tracker.php?start=-10",
+        ]
+    )
+    response = _Response((rows + links).encode(), "text/html", "utf-8")
+    batch = parse_search_batch(response, "query")
+    assert len(batch.results) == 1 and batch.next_offset == 75
+    assert parse_search_batch(response, "query", 75).next_offset == 150
+    assert parse_search_batch(response, "query", 150).next_offset is None
+
+
+def test_search_batch_sends_original_query_sort_and_verified_server_offset():
+    async def run():
+        client = ScriptedClient([page("search")])
+        batch = await client.search_batch("  Тест & 2020  ", offset=50)
+        params = parse_qs(urlsplit(client.requests[0][1]).query, encoding="cp1251")
+        assert params == {"nm": ["  Тест & 2020  "], "o": ["10"], "s": ["2"], "start": ["50"]}
+        assert batch.offset == 50
+
+    asyncio.run(run())

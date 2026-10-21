@@ -348,6 +348,8 @@ def test_v2_migration_preserves_credentials_and_workflow_and_accepts_found(h):
         db.execute("DROP TABLE selections")
         db.execute("ALTER TABLE selections_old RENAME TO selections")
         db.execute("CREATE INDEX selections_status ON selections(status)")
+        db.execute("DROP TABLE search_pages")
+        db.execute("DROP TABLE search_sessions")
         db.execute("PRAGMA user_version=2")
     h.store.initialize()
     assert h.store.get_credentials(1) == pair

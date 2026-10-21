@@ -315,10 +315,12 @@ def test_version_one_migration_preserves_workflow(state):
     store, _ = state
     item = selection(store)
     with sqlite3.connect(store.path) as db:
+        db.execute("DROP TABLE search_pages")
+        db.execute("DROP TABLE search_sessions")
         db.execute("DROP TABLE rutracker_credentials")
         db.execute("PRAGMA user_version = 1")
     store.initialize()
     assert store.get_selection(item.id, 1, -2) == item
     assert store.get_credentials(1) is None
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4

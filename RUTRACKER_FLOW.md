@@ -41,18 +41,21 @@ D. **Active Transmission downloads**
    - Prompt for a query and use the submitted text unchanged as the search value.
    - Nonempty input → 5. Empty input → remain at 4. /cancel → stop.
 5. **Search RuTracker**
-   - Send the unchanged query with `o=10&s=2` for descending seed count. Parse all distinct topics in the returned page, sort by seeds descending, then take ten; ties retain source order and unknown seed counts come last.
+   - Send the unchanged query with `o=10&s=2` for descending seed count. Parse and cache every distinct topic in the server batch, sort by seeds descending, then display ten-result bot pages; ties retain source order and unknown seed counts come last.
    - Matches → 6. No matches → explain and return to 4.
    - Search table has no recognizable releases → show the diagnostic message without buttons and return to 4. Every nonempty text input, including numbers, is then a new query unchanged; /start, /search, /help, and /cancel remain commands.
    - Session expired → 2–3, then retry 5 with the saved query.
    - Network error → Retry → 5, New search → 4, or /cancel → stop.
 6. **Display first 10 results**
-   - Show the seed-ranked top ten; number results 1–10, or fewer when fewer exist.
+   - Show the current ten-result bot page; number results 1–10 locally, or fewer on the final partial page. Include Page N in the final choice prompt.
    - Send each result in its own message with title, size, and seed count when available; omit topic URLs. After all result messages, send "Choose a numbered button or send a new search query." with all numbered buttons on this final message only. Back restores the same per-result message layout and numbering.
    - Show only numbered result buttons, one for each displayed torrent, in rows of up to five; do not show New search or Cancel buttons on this screen.
    - A numbered button or typed valid displayed result number → 7.
    - Any other nonempty text, including an out-of-range number → 5 with that text as the new query unchanged.
-   - /search → 4. /cancel → stop. Pagination is deferred.
+   - next appears if cached rows or a validated server continuation remain; previous appears after page 1. Navigation buttons occupy a separate row below the numeric buttons. Typed next/previous remain unchanged new queries.
+   - Cached destination → restore its immutable snapshot without server access. Uncached destination → fetch the advertised server offset only as needed, preserve query/sort, append unique topics, and fill the requested ten-result page. Never calculate server start from the bot page number. Previous normally uses cache.
+   - Save current page only after its snapshot is ready. Network/format error → retain the current page and offer Retry for the same destination. Authentication/CAPTCHA → 2–3 → resume the requested page. Empty continuation → remain on current page and hide next. Bound navigation to five server fetches per attempt.
+   - /search → 4. /cancel → stop. Use the search’s original 15-minute TTL; navigation does not renew it. Restarted controls still expire. Back from details and post-submission search results restore the exact originating page.
 7. **Open selected torrent topic**
    - Follow its stored RuTracker topic link; retrieve the full release description.
    - Send the first post’s poster image above the description when available, recognizing ordinary and lazy post-image markup and skipping spoiler screenshots as poster candidates. Failed photo delivery falls back to a poster link; a missing poster does not block details.

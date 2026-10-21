@@ -28,7 +28,7 @@ from tg_torrent_downloader.logging import (
     safe_post_data,
     safe_url,
 )
-from tg_torrent_downloader.models import TorrentResult
+from tg_torrent_downloader.models import SearchBatch, TorrentResult
 
 _ORIGIN = "https://rutracker.org"
 _FORUM = f"{_ORIGIN}/forum/"
@@ -311,7 +311,36 @@ def parse_search(response: _Response) -> tuple[TorrentResult, ...]:
     if not results:
         raise UnrecognizedSearchResults("RuTracker search table contains no recognizable releases")
     results.sort(key=lambda result: result.seeds if result.seeds is not None else -1, reverse=True)
-    return tuple(results[:10])
+    return tuple(results)
+
+
+def parse_search_batch(response: _Response, query: str, offset: int = 0) -> SearchBatch:
+    results = parse_search(response)
+    if not results:
+        return SearchBatch((), offset)
+    page = _soup(response)
+    offsets = set()
+    for link in page.select('a[href*="start="]'):
+        try:
+            url = _source_url(str(link["href"]), _FORUM + "tracker.php")
+            parts = urlsplit(url)
+            values = parse_qs(parts.query, encoding="windows-1251", errors="strict")
+            starts = values.get("start", [])
+            if (
+                parts.path != "/forum/tracker.php"
+                or len(starts) != 1
+                or not re.fullmatch(r"[0-9]{1,10}", starts[0])
+                or values.get("nm", [query]) != [query]
+                or values.get("o", ["10"]) != ["10"]
+                or values.get("s", ["2"]) != ["2"]
+            ):
+                continue
+            candidate = int(starts[0])
+            if offset < candidate <= 2**31 - 1:
+                offsets.add(candidate)
+        except RuTrackerError, ValueError, UnicodeError:
+            continue
+    return SearchBatch(results, offset, min(offsets) if offsets else None)
 
 
 def _display_url(value: str, base: str) -> str | None:
@@ -834,20 +863,27 @@ class RuTrackerClient:
             self._set_state("captcha_cancelled")
 
     async def search(self, query: str) -> tuple[TorrentResult, ...]:
+        return (await self.search_batch(query)).results
+
+    async def search_batch(self, query: str, *, offset: int = 0) -> SearchBatch:
         if not query.strip():
             raise ValueError("Search query must not be empty")
+        SearchBatch((), offset)  # Reject malformed offsets before any request.
+        values = {"nm": query, "o": "10", "s": "2"}
+        if offset:
+            values["start"] = str(offset)
         # RuTracker's legacy search field is Windows-1251; never rewrite the query.
         try:
-            params = urlencode(
-                {"nm": query, "o": "10", "s": "2"}, encoding="windows-1251", errors="strict"
-            )
+            params = urlencode(values, encoding="windows-1251", errors="strict")
         except UnicodeError:
             raise ValueError("RuTracker search does not support some query characters") from None
         async with self._operation("searching"):
             log_user_input(self._user_id, self._chat_id, query)
-            results = parse_search(await self._request("GET", _FORUM + "tracker.php?" + params))
-            self._set_state("results_ready" if results else "no_results")
-            return results
+            batch = parse_search_batch(
+                await self._request("GET", _FORUM + "tracker.php?" + params), query, offset
+            )
+            self._set_state("results_ready" if batch.results else "no_results")
+            return batch
 
     async def get_topic(self, result: TorrentResult) -> TopicDetails:
         async with self._operation("loading_topic", result.topic_id):

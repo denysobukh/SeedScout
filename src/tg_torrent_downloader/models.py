@@ -51,6 +51,39 @@ class Search:
 
 
 @dataclass(frozen=True)
+class SearchBatch:
+    results: tuple[TorrentResult, ...]
+    offset: int = 0
+    next_offset: int | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.offset) is not int or not 0 <= self.offset <= 2**31 - 1:
+            raise ValueError("Invalid server search offset")
+        if self.next_offset is not None and (
+            type(self.next_offset) is not int or not self.offset < self.next_offset <= 2**31 - 1
+        ):
+            raise ValueError("Invalid next server search offset")
+
+
+@dataclass(frozen=True)
+class SearchSession:
+    id: str
+    user_id: int
+    chat_id: int
+    query: str
+    results: tuple[TorrentResult, ...]
+    next_offset: int | None
+    fetched_offsets: tuple[int, ...]
+    current_page: int
+    created_at: float
+    expires_at: float
+
+    @property
+    def has_next(self) -> bool:
+        return len(self.results) > self.current_page * 10 or self.next_offset is not None
+
+
+@dataclass(frozen=True)
 class Selection:
     id: str
     search_id: str

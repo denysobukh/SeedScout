@@ -21,6 +21,8 @@ from tg_torrent_downloader.logging import log_state
 from tg_torrent_downloader.models import (
     RuTrackerCredentials,
     Search,
+    SearchBatch,
+    SearchSession,
     Selection,
     SelectionStatus,
     TorrentResult,
@@ -68,6 +70,22 @@ _SCHEMA = (
             OR info_hash IS NOT NULL)
     )""",
     "CREATE INDEX selections_status ON selections(status)",
+)
+
+
+_PAGINATION_SCHEMA = (
+    """CREATE TABLE search_sessions (
+        id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, chat_id INTEGER NOT NULL,
+        query TEXT NOT NULL, results TEXT NOT NULL, next_offset INTEGER,
+        fetched_offsets TEXT NOT NULL, current_page INTEGER NOT NULL CHECK(current_page >= 1),
+        created_at REAL NOT NULL, expires_at REAL NOT NULL CHECK(expires_at > created_at)
+    )""",
+    """CREATE TABLE search_pages (
+        session_id TEXT NOT NULL REFERENCES search_sessions(id),
+        page_number INTEGER NOT NULL CHECK(page_number >= 1),
+        search_id TEXT NOT NULL UNIQUE REFERENCES searches(id),
+        PRIMARY KEY(session_id, page_number)
+    )""",
 )
 
 
@@ -124,9 +142,14 @@ class WorkflowStore:
                 db.execute("ALTER TABLE selections_v3 RENAME TO selections")
                 db.execute(_SCHEMA[2])
                 db.execute("CREATE INDEX selections_hash_status ON selections(info_hash,status)")
-                db.execute("PRAGMA user_version = 3")
-            elif version != 3:
+                version = 3
+            if version == 3:
+                for statement in _PAGINATION_SCHEMA:
+                    db.execute(statement)
+                version = 4
+            if version != 4:
                 raise StateError("Unsupported workflow database schema version")
+            db.execute("PRAGMA user_version = 4")
 
     @contextmanager
     def runtime_lock(self) -> Iterator[None]:
@@ -252,6 +275,176 @@ class WorkflowStore:
             )
             self._active(row)
             return self._search(row)
+
+    @staticmethod
+    def _search_session(row: sqlite3.Row) -> SearchSession:
+        data = dict(row)
+        data["results"] = tuple(TorrentResult(**item) for item in json.loads(data["results"]))
+        data["fetched_offsets"] = tuple(json.loads(data["fetched_offsets"]))
+        return SearchSession(**data)
+
+    def save_search_session(
+        self,
+        user_id: int,
+        chat_id: int,
+        query: str,
+        batch: SearchBatch,
+        *,
+        ttl_seconds: float = 900,
+    ) -> SearchSession:
+        if (
+            not query.strip()
+            or batch.offset != 0
+            or not math.isfinite(ttl_seconds)
+            or ttl_seconds <= 0
+        ):
+            raise ValueError("A query, initial batch, and positive TTL are required")
+        if (
+            type(user_id) is not int
+            or not 0 < user_id < 2**52
+            or type(chat_id) is not int
+            or chat_id == 0
+        ):
+            raise ValueError("Invalid search owner")
+        now = self.clock()
+        session = SearchSession(
+            uuid4().hex,
+            user_id,
+            chat_id,
+            query,
+            batch.results,
+            batch.next_offset,
+            (0,),
+            1,
+            now,
+            now + ttl_seconds,
+        )
+        with self._transaction() as db:
+            db.execute(
+                "INSERT INTO search_sessions VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    session.id,
+                    user_id,
+                    chat_id,
+                    query,
+                    json.dumps([asdict(item) for item in session.results]),
+                    batch.next_offset,
+                    "[0]",
+                    1,
+                    now,
+                    session.expires_at,
+                ),
+            )
+        return session
+
+    def get_search_session(self, session_id: str, user_id: int, chat_id: int) -> SearchSession:
+        with self._transaction() as db:
+            row = self._owned(
+                db.execute("SELECT * FROM search_sessions WHERE id=?", (session_id,)).fetchone(),
+                user_id,
+                chat_id,
+            )
+            self._active(row)
+            return self._search_session(row)
+
+    def append_search_batch(
+        self,
+        session_id: str,
+        user_id: int,
+        chat_id: int,
+        batch: SearchBatch,
+    ) -> SearchSession:
+        with self._transaction() as db:
+            row = self._owned(
+                db.execute("SELECT * FROM search_sessions WHERE id=?", (session_id,)).fetchone(),
+                user_id,
+                chat_id,
+            )
+            self._active(row)
+            session = self._search_session(row)
+            if batch.offset in session.fetched_offsets:
+                return session  # Idempotent after an interrupted but committed cache write.
+            if batch.offset != session.next_offset:
+                raise InvalidTransition("Unexpected search continuation")
+            seen = {result.topic_id for result in session.results}
+            results = list(session.results)
+            for result in batch.results:
+                if result.topic_id not in seen:
+                    results.append(result)
+                    seen.add(result.topic_id)
+            next_offset = batch.next_offset if batch.results else None
+            db.execute(
+                "UPDATE search_sessions SET results=?,next_offset=?,fetched_offsets=? WHERE id=?",
+                (
+                    json.dumps([asdict(item) for item in results]),
+                    next_offset,
+                    json.dumps([*session.fetched_offsets, batch.offset]),
+                    session_id,
+                ),
+            )
+            return self._search_session(
+                db.execute("SELECT * FROM search_sessions WHERE id=?", (session_id,)).fetchone()
+            )
+
+    def select_search_page(
+        self,
+        session_id: str,
+        user_id: int,
+        chat_id: int,
+        page_number: int,
+    ) -> Search:
+        if type(page_number) is not int or page_number < 1:
+            raise ValueError("Invalid search page number")
+        with self._transaction() as db:
+            row = self._owned(
+                db.execute("SELECT * FROM search_sessions WHERE id=?", (session_id,)).fetchone(),
+                user_id,
+                chat_id,
+            )
+            self._active(row)
+            session = self._search_session(row)
+            start = (page_number - 1) * 10
+            results = session.results[start : start + 10]
+            if not results or (len(results) < 10 and session.next_offset is not None):
+                raise InvalidTransition("Search page has not finished loading")
+            cached = db.execute(
+                "SELECT searches.* FROM search_pages "
+                "JOIN searches ON searches.id=search_pages.search_id "
+                "WHERE session_id=? AND page_number=?",
+                (session_id, page_number),
+            ).fetchone()
+            if cached is None:
+                snapshot = Search(
+                    uuid4().hex,
+                    user_id,
+                    chat_id,
+                    session.query,
+                    results,
+                    session.created_at,
+                    session.expires_at,
+                )
+                db.execute(
+                    "INSERT INTO searches VALUES (?,?,?,?,?,?,?)",
+                    (
+                        snapshot.id,
+                        user_id,
+                        chat_id,
+                        snapshot.query,
+                        json.dumps([asdict(item) for item in results]),
+                        snapshot.created_at,
+                        snapshot.expires_at,
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO search_pages VALUES (?,?,?)",
+                    (session_id, page_number, snapshot.id),
+                )
+            else:
+                snapshot = self._search(cached)
+            db.execute(
+                "UPDATE search_sessions SET current_page=? WHERE id=?", (page_number, session_id)
+            )
+            return snapshot
 
     def select(self, search_id: str, position: int, user_id: int, chat_id: int) -> Selection:
         with self._transaction() as db:

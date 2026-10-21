@@ -11,7 +11,12 @@ from aiogram.types import CallbackQuery, Chat, Message, User
 from workflow_fakes import DATA, HASH, FakeTransmission
 
 from tg_torrent_downloader.conversation import TelegramConversation, split_text
-from tg_torrent_downloader.models import RuTrackerCredentials, SelectionStatus, TorrentResult
+from tg_torrent_downloader.models import (
+    RuTrackerCredentials,
+    SearchBatch,
+    SelectionStatus,
+    TorrentResult,
+)
 from tg_torrent_downloader.rutracker import (
     AuthenticationRequired,
     CaptchaChallenge,
@@ -54,6 +59,8 @@ class FakeTracker:
         self.check_calls = 0
         self.check_outcomes = []
         self.queries, self.topics, self.answers = [], [], []
+        self.batch_calls = []
+        self.batch_outcomes = {}
         self.downloads, self.download_outcomes = [], []
         self.download_wait = None
         self.download_entered = asyncio.Event()
@@ -64,7 +71,7 @@ class FakeTracker:
             [],
         )
         self.results = tuple(
-            TorrentResult(i, f"Release {i}", size="1 GB", seeds=2) for i in range(1, 13)
+            TorrentResult(i, f"Release {i}", size="1 GB", seeds=2) for i in range(1, 11)
         )
         self.description = "Full description <b>literal text</b>"
         self.wait = None
@@ -101,6 +108,13 @@ class FakeTracker:
     async def search(self, query):
         self.queries.append(query)
         return self.outcome(self.search_outcomes, self.results)
+
+    async def search_batch(self, query, *, offset=0):
+        self.batch_calls.append((query, offset))
+        if offset in self.batch_outcomes:
+            self.queries.append(query)
+            return self.outcome(self.batch_outcomes[offset], SearchBatch((), offset))
+        return SearchBatch(await self.search(query), offset)
 
     async def get_topic(self, result):
         self.topics.append(result)
@@ -236,7 +250,10 @@ def test_query_is_unchanged_and_first_ten_results_are_numbered(h):
         for index, item in enumerate(results, 1):
             assert item["text"] == f"{index}. Release {index}\n1 GB · Seeds: 2"
             assert item["reply_markup"] is None
-        assert h.bot.messages[-1]["text"] == "Choose a numbered button or send a new search query."
+        assert (
+            h.bot.messages[-1]["text"]
+            == "Page 1\nChoose a numbered button or send a new search query."
+        )
         assert h.bot.messages[-1]["reply_markup"] is not None
 
     asyncio.run(run())
@@ -1393,6 +1410,184 @@ def test_submission_has_one_short_message_and_results_downloads_navigation(h, ou
         await h.click("Download")
         await h.click("downloads")
         assert h.state.stage == "downloads" and h.state.actions == ("reload", "menu")
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_pagination_uses_cached_pages_and_fetches_only_at_server_boundary(h):
+    async def run():
+        first = tuple(TorrentResult(i, f"Release {i}", seeds=100 - i) for i in range(1, 51))
+        last = tuple(TorrentResult(i, f"Release {i}", seeds=100 - i) for i in range(51, 64))
+        h.next_client.batch_outcomes = {
+            0: [SearchBatch(first, next_offset=50)],
+            50: [SearchBatch(last, 50)],
+        }
+        await h.search(" original ")
+        assert h.state.search_session.current_page == 1 and "prev" not in h.state.actions
+        assert h.state.actions[-1] == "next"
+        rows = h.bot.messages[-1]["reply_markup"].inline_keyboard
+        assert [button.text for button in rows[-1]] == ["next"]
+        for page in range(2, 6):
+            await h.click("next")
+            assert h.state.search.results[0].topic_id == (page - 1) * 10 + 1
+        assert h.client.batch_calls == [(" original ", 0)]
+        await h.click("next")
+        assert h.state.search_session.current_page == 6
+        assert h.client.batch_calls == [(" original ", 0), (" original ", 50)]
+        sixth = h.state.search
+        await h.send("2")
+        assert h.state.selected.result.topic_id == 52
+        await h.click("Back")
+        assert h.state.search == sixth and h.state.search_session.current_page == 6
+        await h.click("next")
+        assert len(h.state.search.results) == 3 and "next" not in h.state.actions
+        assert h.state.search_session.current_page == 7
+        await h.click("previous")
+        assert h.state.search == sixth and len(h.client.batch_calls) == 2
+        await h.click("1")
+        await h.click("Download")
+        await h.click("search results")
+        assert h.state.search == sixth and h.state.search_session.current_page == 6
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("text", ["next", "previous", "11", "  another query  "])
+def test_arbitrary_text_on_later_page_starts_a_fresh_search(h, text):
+    async def run():
+        h.next_client.results += tuple(TorrentResult(i, f"Release {i}") for i in range(11, 21))
+        await h.search()
+        await h.click("next")
+        previous = h.state.search_session.id
+        await h.send(text)
+        assert h.client.queries[-1] == text
+        assert h.state.search_session.id != previous
+        assert h.state.search_session.current_page == 1
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("captcha", [False, True])
+def test_page_fetch_reauthenticates_and_resumes_the_requested_page(h, captcha):
+    async def run():
+        h.next_client.batch_outcomes = {
+            0: [SearchBatch(h.next_client.results, next_offset=50)],
+            50: [AuthenticationRequired("expired"), SearchBatch((TorrentResult(11, "Next"),), 50)],
+        }
+        await h.search()
+        if captcha:
+            h.client.auth_outcomes = [CaptchaChallenge("page", 1, 10, b"image", "image/png", 1300)]
+        await h.click("next")
+        if captcha:
+            assert h.state.stage == "captcha" and h.state.pending_page == 2
+            await h.send("answer")
+        assert h.state.stage == "results" and h.state.search_session.current_page == 2
+        assert h.state.search.results[0].topic_id == 11
+        assert h.client.batch_calls == [("ubuntu", 0), ("ubuntu", 50), ("ubuntu", 50)]
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_page_network_error_keeps_current_page_and_retry_target(h):
+    async def run():
+        h.next_client.batch_outcomes = {
+            0: [SearchBatch(h.next_client.results, next_offset=50)],
+            50: [NetworkError("offline"), SearchBatch((TorrentResult(11, "Next"),), 50)],
+        }
+        await h.search()
+        original = h.state.search
+        await h.click("next")
+        assert h.state.search == original and h.state.search_session.current_page == 1
+        assert "Could not load" in h.bot.messages[-1]["text"]
+        assert h.state.pending_page == 2 and "retry" in h.state.actions
+        await h.click("Retry")
+        assert h.state.search_session.current_page == 2
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_empty_server_continuation_hides_next_without_advancing(h):
+    async def run():
+        h.next_client.batch_outcomes = {
+            0: [SearchBatch(h.next_client.results, next_offset=50)],
+            50: [SearchBatch((), 50)],
+        }
+        await h.search()
+        original = h.state.search
+        await h.click("next")
+        assert h.state.search == original and h.state.search_session.current_page == 1
+        assert "next" not in h.state.actions and "No more results" in h.bot.messages[-1]["text"]
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_old_and_foreign_pagination_controls_cannot_navigate(h):
+    async def run():
+        h.next_client.results += tuple(TorrentResult(i, f"Release {i}") for i in range(11, 21))
+        await h.search()
+        old = h.button("next")
+        await h.flow.handle_callback(callback(old, user_id=2))
+        assert h.state.search_session.current_page == 1
+        await h.click("next")
+        await h.flow.handle_callback(callback(old))
+        assert "expired" in h.bot.answers[-1]["text"]
+        assert h.state.search_session.current_page == 2
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_double_next_clicks_fetch_the_continuation_once(h, monkeypatch):
+    async def run():
+        h.next_client.batch_outcomes = {0: [SearchBatch(h.next_client.results, next_offset=50)]}
+        await h.search()
+        data = h.button("next")
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def fetch(query, *, offset=0):
+            calls.append(offset)
+            entered.set()
+            await release.wait()
+            return SearchBatch((TorrentResult(11, "Next"),), offset)
+
+        monkeypatch.setattr(h.client, "search_batch", fetch)
+        task = asyncio.create_task(h.flow.handle_callback(callback(data)))
+        await entered.wait()
+        await h.flow.handle_callback(callback(data))
+        assert "Working" in h.bot.answers[-1]["text"]
+        release.set()
+        await task
+        assert calls == [50] and h.state.search_session.current_page == 2
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_rejected_login_during_paging_resumes_same_cursor_with_new_credentials(h):
+    async def run():
+        h.next_client.batch_outcomes = {
+            0: [SearchBatch(h.next_client.results, next_offset=50)],
+            50: [AuthenticationRequired("expired")],
+        }
+        await h.search(" saved query ")
+        original = h.state.search
+        h.client.auth_outcomes = [InvalidCredentials("bad")]
+        h.next_client.batch_outcomes = {50: [SearchBatch((TorrentResult(11, "Next"),), 50)]}
+        await h.click("next")
+        assert h.state.stage == "login" and h.state.search == original
+        await h.send("replacement-user")
+        await h.send("replacement-password")
+        assert h.state.search_session.current_page == 2
+        assert h.client.batch_calls == [(" saved query ", 50)]
+        assert h.state.search.results[0].topic_id == 11
+        assert h.store.get_credentials(1).username == "replacement-user"
         await h.flow.close()
 
     asyncio.run(run())
