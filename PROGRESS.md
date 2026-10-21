@@ -212,3 +212,13 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - The previous bot process was no longer running; starting the updated app for the ongoing Telegram test. This change and the preceding result-link removal remain uncommitted for user review.
 
 - User approved committing seed-ranked search results and the preceding result-link removal. Included implementation, regression tests, and documentation; validation remains 120 targeted tests passed with lint, formatting, and whitespace checks passed. Next planned step: Transmission integration (step 5), pending user instruction.
+
+## Simplified torrent details controls
+
+- User requested removing New search and Cancel buttons from a single torrent detail screen, with arbitrary text treated as a search query.
+- Details now offer only Download and Back. All nonempty text, including valid result numbers and unknown slash-prefixed strings, searches unchanged; recognized /start, /search, /help, and /cancel commands retain their behavior. New queries clear the selected topic and invalidate its old controls. Result-list numeric selection remains available.
+- Updated specification, flow, implementation plan, and README; corrected the README's obsolete statement that search results include topic links. Updated existing conversation coverage for numeric/arbitrary detail queries, exact buttons, stale controls, and /cancel.
+- Changes remain uncommitted pending user review. Validation and local runtime status follow below.
+- Validation: all 51 conversation tests passed; Ruff lint/format and whitespace checks passed. Stopped the previous bot process and restarting the updated app for the ongoing Telegram review; send /start for fresh controls. No commit made.
+
+- User approved committing the simplified torrent detail controls and text-to-search behavior. Validation: 51 conversation tests passed, with Ruff lint/format and whitespace checks passed. Next planned step remains Transmission integration (step 5), pending user instruction.

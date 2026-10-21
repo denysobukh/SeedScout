@@ -275,7 +275,7 @@ class TelegramConversation:
         if command in {"/start", "/search"}:
             c.query, c.search, c.selected = "", None, None
             await self._authenticate(c, "query")
-        elif command and c.stage not in {"login", "password"}:
+        elif command and c.stage not in {"login", "password", "description"}:
             await self._text(c.chat_id, "Unknown command. Use /help for available commands.")
         elif text is None or not text.strip():
             await self._text(c.chat_id, "Send a nonempty text message.")
@@ -305,10 +305,12 @@ class TelegramConversation:
                 await self._captcha(c)
             else:
                 await self._resume(c)
-        elif c.stage == "query":
+        elif c.stage in {"query", "description"}:
+            if c.stage == "description":
+                c.search, c.selected = None, None
             c.query = text  # Preserve whitespace and punctuation exactly for RuTracker search.
             await self._search(c)
-        elif c.stage in {"results", "description"}:
+        elif c.stage == "results":
             number = text.strip()
             if (
                 number.isascii()
@@ -591,5 +593,5 @@ class TelegramConversation:
         await self._screen(
             c,
             f"{details.result.title}\n{details.result.topic_url}\n\n{details.description}",
-            ("download", "back", "new", "cancel"),
+            ("download", "back"),
         )

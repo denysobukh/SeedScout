@@ -559,7 +559,7 @@ def test_cancel_marks_pending_selection_cancelled_and_closes_client(h):
         await h.search()
         await h.send("1")
         selected = h.state.selected
-        await h.click("Cancel")
+        await h.send("/cancel")
         assert not h.flow.sessions and h.client.closed
         assert h.store.get_selection(selected.id, 1, 10).status == SelectionStatus.CANCELLED
 
@@ -593,13 +593,21 @@ def test_ten_result_buttons_are_arranged_in_two_rows(h):
     asyncio.run(run())
 
 
-def test_new_query_from_description_invalidates_previous_controls(h):
+@pytest.mark.parametrize("query", ["  a different release  ", "1", "10", "11", "/a-title"])
+def test_new_query_from_description_invalidates_previous_controls(h, query):
     async def run():
         await h.search()
         await h.click("2")
         old = h.button("Download")
-        await h.send("  a different release  ")
-        assert h.client.queries == ["ubuntu", "  a different release  "]
+        assert h.state.actions == ("download", "back")
+        markup = h.bot.messages[-1]["reply_markup"]
+        assert [button.text for row in markup.inline_keyboard for button in row] == [
+            "Download",
+            "Back",
+        ]
+        await h.send(query)
+        assert h.client.queries == ["ubuntu", query]
+        assert len(h.client.topics) == 1
         assert h.state.stage == "results" and h.state.selected is None
         await h.flow.handle_callback(callback(old))
         assert "expired" in h.bot.answers[-1]["text"]

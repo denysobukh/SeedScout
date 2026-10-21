@@ -46,7 +46,7 @@ The user approved this flow. Download is the explicit confirmation; no extra con
 7. **Open selected torrent topic**
    - Follow its stored RuTracker topic link; retrieve the full release description.
    - Show the description as safe text, retaining useful links, split across Telegram messages when needed; include the source link.
-   - Offer Download and Back → 8. Nonempty text that is not a valid displayed result number starts a new search → 5; a valid number opens that result → 7.
+   - Offer only Download and Back → 8; omit New search and Cancel buttons. Every nonempty text input, including numbers and unknown slash-prefixed strings, starts a new search → 5 unchanged. /start, /search, /help, and /cancel retain their command behavior.
    - Topic unavailable → explain, return to 6.
    - Session expired → 2–3, then retry 7 with the saved topic.
    - Network error → offer Retry → 7 or Back → 6.

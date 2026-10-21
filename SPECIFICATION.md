@@ -25,8 +25,8 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Request server-side seed sorting (`o=10&s=2`) and sort parsed results locally before taking ten. Keep source order for equal seed counts and put unknown counts after zero. Pagination remains deferred; local ranking covers the returned search page.
 - Omit RuTracker topic URLs from the search result list; show numbered titles, size, and seed count when available.
 - Show one numbered button per displayed result (1–10, or fewer), replacing New search and Cancel buttons on the results list. Arrange up to five numeric buttons per row.
-- Accept a numbered button or a typed valid displayed result number as selection input. Any other nonempty text on the results or description screen starts a new search using the original text unchanged, including out-of-range numbers. Recognized commands and CAPTCHA answers retain their dedicated behavior.
-- Provide Download and Back buttons on the description; /search and /cancel remain available. Initial results are limited to the top 10; pagination is deferred.
+- Accept a numbered button or a typed valid displayed result number as selection input. Any other nonempty text on the results screen starts a new search using the original text unchanged, including out-of-range numbers. On the description screen, every nonempty text input, including valid result numbers and unrecognized slash-prefixed strings, starts a new search unchanged. Recognized commands and CAPTCHA answers retain their dedicated behavior.
+- Provide only Download and Back buttons on the description; omit New search and Cancel buttons. /start, /search, /help, and /cancel remain commands. Initial results are limited to the top 10; pagination is deferred.
 - Keep search results and pending selections scoped to the requesting user and chat.
 - Prevent another user from confirming someone else's selection.
 - Expire stale selections and explain how to search again.
