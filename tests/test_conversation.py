@@ -231,10 +231,13 @@ def test_query_is_unchanged_and_first_ten_results_are_numbered(h):
         assert h.client.queries == ["  Test & 2020  "]
         assert h.state.stage == "results"
         assert len(h.state.search.results) == 10
-        text = h.bot.messages[-1]["text"]
-        assert "1. Release 1" in text and "10. Release 10" in text
-        assert "11. Release" not in text
-        assert "1 GB" in text and "Seeds: 2" in text
+        results = h.bot.messages[-11:-1]
+        assert len(results) == 10
+        for index, item in enumerate(results, 1):
+            assert item["text"] == f"{index}. Release {index}\n1 GB · Seeds: 2"
+            assert item["reply_markup"] is None
+        assert h.bot.messages[-1]["text"] == "Choose a numbered button or send a new search query."
+        assert h.bot.messages[-1]["reply_markup"] is not None
 
     asyncio.run(run())
 
@@ -243,7 +246,7 @@ def test_description_and_back_preserve_search_and_numbering(h):
     async def run():
         await h.search()
         original = h.state.search
-        results_text = h.bot.messages[-1]["text"]
+        results_text = [item["text"] for item in h.bot.messages[-11:]]
         await h.send("2")
         assert h.state.stage == "description"
         assert h.client.topics[0].topic_id == 2
@@ -252,7 +255,7 @@ def test_description_and_back_preserve_search_and_numbering(h):
         assert h.bot.messages[-1]["link_preview_options"].is_disabled
         await h.click("Back")
         assert h.state.search == original
-        assert h.bot.messages[-1]["text"] == results_text
+        assert [item["text"] for item in h.bot.messages[-11:]] == results_text
         assert h.client.queries == ["ubuntu"]
 
     asyncio.run(run())
@@ -263,10 +266,15 @@ def test_download_confirms_once_and_reports_durable_acceptance(h):
         await h.search()
         await h.send("1")
         selected = h.state.selected
+        old_download = h.button("Download")
+        before = len(h.bot.messages)
         await h.click("Download")
-        await h.click("Download")
-        assert "Accepted by Transmission" in h.bot.messages[-1]["text"]
-        assert "Transmission ID: 7" in h.bot.messages[-1]["text"]
+        assert len(h.bot.messages) == before + 1
+        assert h.bot.messages[-1]["text"] == "Accepted by Transmission."
+        assert h.state.actions == ("results", "downloads")
+        await h.flow.handle_callback(callback(old_download))
+        assert "expired" in h.bot.answers[-1]["text"]
+        assert len(h.bot.messages) == before + 1
         assert h.client.downloads == [1] and len(h.rpc.adds) == 1
         stored = h.store.get_selection(selected.id, 1, 10)
         assert stored.status == SelectionStatus.ACCEPTED
@@ -826,7 +834,7 @@ def test_download_reports_duplicate_and_reconciled_presence_honestly(h, status, 
         h.rpc.status = status
         await h.click("Download")
         assert phrase in h.bot.messages[-1]["text"]
-        assert h.state.actions == ("download", "back")
+        assert h.state.actions == ("results", "downloads")
         assert h.client.downloads == [2]
 
     asyncio.run(run())
@@ -1348,6 +1356,43 @@ def test_long_expandable_detail_sections_keep_full_text_and_valid_entities(h):
         assert responses[-1]["reply_markup"] is not None
         await h.send("another query")
         assert h.state.stage == "results" and h.client.queries[-1] == "another query"
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "rejected", "uncertain"])
+def test_submission_has_one_short_message_and_results_downloads_navigation(h, outcome):
+    async def run():
+        await h.search()
+        original = h.state.search
+        await h.click("1")
+        if outcome == "rejected":
+            h.rpc.add_error = TransmissionRejected("rejected")
+        elif outcome == "uncertain":
+            h.rpc.add_error = SubmissionUncertain(HASH)
+        before = len(h.bot.messages)
+        await h.click("Download")
+        messages = h.bot.messages[before:]
+        assert len(messages) == 1
+        expected = {
+            "accepted": "Accepted by Transmission.",
+            "rejected": "Not accepted by Transmission.",
+            "uncertain": "Transmission acceptance is uncertain. Use /status to check.",
+        }[outcome]
+        assert messages[0]["text"] == expected
+        assert [
+            button.text for row in messages[0]["reply_markup"].inline_keyboard for button in row
+        ] == ["search results", "downloads"]
+        await h.click("search results")
+        assert h.state.stage == "results" and h.state.search == original
+        assert h.client.queries == ["ubuntu"]
+        # A newly selected topic still requires its own explicit Download confirmation.
+        await h.click("2")
+        h.rpc.add_error = None
+        await h.click("Download")
+        await h.click("downloads")
+        assert h.state.stage == "downloads" and h.state.actions == ("reload", "menu")
         await h.flow.close()
 
     asyncio.run(run())

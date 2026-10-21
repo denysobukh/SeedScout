@@ -6,11 +6,11 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 
 ## Current checkpoint
 
-- Language: Python. Repository: main; latest approved commit is 90757da (interactive macOS installer and service management).
+- Language: Python. Repository: main; latest approved commit is ea70fd5 (posters and expandable torrent sections).
 - Steps 1–6 and the approved search/login/UI updates are committed. User approved committing removal of all Cancel buttons and shorter login/search prompts.
 - Step 6 connects explicit Download confirmation to retrieval, validation, durable submission and outcome reporting. It adds /status, schema version 3/found outcomes, transactional unresolved-hash guards, cancellation-safe writes, and startup recovery under a per-database runtime lock.
 - Agent verification used synthetic torrents and fake services only for submissions. Earlier read-only live checks reached Transmission 4.1.3/RPC 19/API 6.0.1; no agent-initiated live torrent retrieval/submission has been performed.
-- Poster-first torrent details and expandable RuTracker spoiler quotes: approved by the user for commit. Installer is committed and the user’s LaunchAgent is installed/loaded for this checkout. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
+- Separate search-result messages and compact submission verdict/navigation: approved by the user for commit. Poster-first torrent details and expandable quotes are committed. Installer is committed and the user’s LaunchAgent is installed/loaded for this checkout. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
 
 ## Step tracker
 
@@ -338,3 +338,19 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Live read-only verification: three recently selected topics (5802155, 6918553, 2130761) contained real sp-wrap/sp-head/sp-body markup; parsing found posters and respectively 3, 2, and 3 expandable sections. No authenticated HTML or release bodies were saved to the repository, and no torrent files were fetched/submitted. User had installed this checkout’s LaunchAgent; gracefully unloaded it, then registered it again. Immediate bootstrap returned a transient error 5 while the prior job was stopping; registration retried successfully once it stopped, and launchd reports the updated bot running. Lint/format/whitespace checks passed. All 440 regression tests passed. Changes remain uncommitted; user should send /start and select a torrent for live Telegram poster/quote review.
 
 - User approved committing poster-first torrent details and expandable RuTracker spoiler quotes. Included parser/rendering changes, synthetic regression tests, and updated specification/flow/README/plan/progress. Validation: all 440 regression tests passed, with lint/format/whitespace checks passed and read-only live poster/spoiler parsing verified. The installed LaunchAgent was reloaded for review. No secrets, captured authenticated HTML, or runtime state are included.
+
+## Separate search-result messages
+
+- User requested one message per search-result row plus a final choice prompt. Each numbered result now sends its own title/metadata message, followed by the exact separate prompt "Choose a numbered button or send a new search query." with all result-number buttons. Back uses the same layout and preserved numbering. Existing safe splitting still handles an oversized individual row.
+- Invalidated old controls before sending rows so a partial send failure cannot leave old buttons pointing at a new list. Updated existing result-layout and Back assertions plus README/specification/flow/plan. Changes remain uncommitted for review; validation and service reload follow.
+
+- Validation: all 90 conversation tests passed; Ruff lint/format and whitespace checks passed. Gracefully reloaded the installed LaunchAgent, completing registration after the old job fully stopped; launchd confirms the updated bot is running. No live search/torrent retrieval/submission was initiated by the agent. Changes remain uncommitted; user can run /start and search to review the new per-result message layout.
+
+## Compact submission verdict and navigation
+
+- User requested replacing the processing notice plus verbose torrent result with a single accepted/not-accepted response and replacing Download/Back buttons with search results/downloads. Removed the processing message and added a short final verdict without repeated title/name/ID. Duplicate, reconciled presence, in-progress, and uncertain outcomes retain honest distinctions; /status keeps its detailed history. Required login/CAPTCHA prompts remain separate when retrieval needs authentication.
+- Final response now offers search results (restore the saved list) and downloads (open the existing active list). Download controls remain only on the pre-confirmation detail screen. Updated existing duplicate-click expectations to confirm stale Download controls cannot resubmit; added accepted/rejected/uncertain single-message and navigation coverage. Updated docs. This is uncommitted alongside the preceding per-result-message layout change; final validation/reload follow.
+
+- Validation: all 93 conversation tests passed, including one-message accepted/rejected/uncertain responses, stale Download prevention, saved-result restoration, and downloads navigation. Ruff lint/format and whitespace checks passed. Gracefully restarted the registered LaunchAgent using SIGTERM, waited for the old worker to exit, then kickstarted it without unregistering the service; launchd confirms the updated bot running. No live torrent retrieval or submission was initiated. Changes remain uncommitted together with the per-result message layout for user review.
+
+- User approved committing separate search-result messages and the compact submission verdict with search results/downloads navigation. Included implementation, regression expectations/coverage, and updated documentation/progress. All 93 conversation tests passed, along with lint/format/whitespace checks. The installed LaunchAgent was gracefully restarted for review. No secrets or runtime data are included.

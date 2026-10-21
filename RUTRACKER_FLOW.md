@@ -48,7 +48,7 @@ D. **Active Transmission downloads**
    - Network error → Retry → 5, New search → 4, or /cancel → stop.
 6. **Display first 10 results**
    - Show the seed-ranked top ten; number results 1–10, or fewer when fewer exist.
-   - Include title, size, and seed count when available; omit topic URLs from the results list.
+   - Send each result in its own message with title, size, and seed count when available; omit topic URLs. After all result messages, send "Choose a numbered button or send a new search query." with all numbered buttons on this final message only. Back restores the same per-result message layout and numbering.
    - Show only numbered result buttons, one for each displayed torrent, in rows of up to five; do not show New search or Cancel buttons on this screen.
    - A numbered button or typed valid displayed result number → 7.
    - Any other nonempty text, including an out-of-range number → 5 with that text as the new query unchanged.
@@ -66,7 +66,7 @@ D. **Active Transmission downloads**
    - Download → atomically claim the owned, unexpired pending selection before retrieving this exact .torrent.
    - RuTracker authentication expires during retrieval → retain this claim → 2–3 → resume retrieval of the same topic. /cancel or new search abandons the unsubmitted claim as failed.
    - Validate v1 metainfo, commit the hash and submitting state, and enforce the unresolved-hash guard before add. Retrieval/validation/preflight/explicit rejection failures → fail; fresh search and confirmation are required.
-   - Transmission accepts → report name/ID and acceptance; duplicate → report already present. Reconciled presence → report confirmed present without claiming new versus duplicate.
+   - Show one short final submission verdict, without a separate processing message or repeated title/name/ID. Accepted → "Accepted by Transmission."; rejected/failed → "Not accepted by Transmission."; duplicates and reconciled presence retain distinct honest verdicts. Offer only **search results** → 6 (same list), and **downloads** → D. /status retains detailed outcome history. Authentication/CAPTCHA prompts remain when required.
    - An ambiguous add → hash lookup; present → found, absent/unreachable → uncertain. Never replay the add while unresolved.
    - /cancel stops waiting and retrieval before submission. Once add may have started, preserve uncertainty or an acknowledged result; do not remove the queued torrent.
    - Repeated Download clicks → report the existing operation status without another submission.

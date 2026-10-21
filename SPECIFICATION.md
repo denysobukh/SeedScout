@@ -12,7 +12,7 @@ Build a Telegram bot that finds torrents on rutracker.org for content requested 
 4. The user picks a numbered result button (or types a valid displayed result number). The bot opens its stored topic link, displays its poster first when available, and shows the full release description, split across Telegram messages as needed. RuTracker collapsible sections become native expandable Telegram quotes, with Download and Back actions on the final message. Download is explicit confirmation; Back restores the original results and numbering.
 5. Only after confirmation, the bot downloads the selected topic's `.torrent` file from rutracker.org.
 6. The bot submits that torrent file to Transmission through its RPC interface.
-7. The bot reports whether Transmission accepted the torrent, including its name and identifier when available. Acceptance means the download was queued; it does not mean the content finished downloading.
+7. After confirmation, the bot sends one concise submission verdict with search results and downloads buttons; omit a separate processing message and repeated title/name/identifier. Report acceptance, rejection, duplicate, confirmed presence, or uncertainty honestly; /status retains detailed names/identifiers. Acceptance means the download was queued; it does not mean the content finished downloading.
 
 See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and retry destinations.
 
@@ -27,6 +27,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Accept nonempty text queries and provide clear feedback for empty or unsupported input.
 - Request server-side seed sorting (`o=10&s=2`) and sort parsed results locally before taking ten. Keep source order for equal seed counts and put unknown counts after zero. Pagination remains deferred; local ranking covers the returned search page.
 - Omit RuTracker topic URLs from the search result list; show numbered titles, size, and seed count when available.
+- Send each numbered search result as a separate message with its title and available metadata. Follow the results with a separate final message: "Choose a numbered button or send a new search query." Attach all numbered selection buttons to that final message only. Keep safe splitting for an individual result exceeding Telegram’s message limit.
 - Show one numbered button per displayed result (1–10, or fewer), replacing New search and Cancel buttons on the results list. Arrange up to five numeric buttons per row.
 - Accept a numbered button or a typed valid displayed result number as selection input. Any other nonempty text on the results screen starts a new search using the original text unchanged, including out-of-range numbers. On the description screen, every nonempty text input, including valid result numbers and unrecognized slash-prefixed strings, starts a new search unchanged. Recognized commands and CAPTCHA answers retain their dedicated behavior.
 - Show an available release poster as a Telegram photo before the description. Extract ordinary or lazy post-image URLs from the first post, preferring post images over decorative icons and excluding screenshot/spoiler images as poster candidates. Keep the description usable when no poster exists or Telegram cannot retrieve it; fall back to a safe poster link on photo failure.
@@ -35,6 +36,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Keep search results and pending selections scoped to the requesting user and chat.
 - Prevent another user from confirming someone else's selection. If Telegram reports an expired callback acknowledgement, abort the action before any claim, retrieval, or submission.
 - Expire stale selections and explain how to search again.
+- Submission response UI: use one final verdict message (no processing notice), with only search results and downloads buttons. Search results restores the saved list without another query; downloads opens the existing active-torrent branch. Never label an uncertain RPC outcome as rejection or success. Authentication/CAPTCHA prompts may still interrupt retrieval when required.
 - Do not download a torrent file or submit it to Transmission before confirmation.
 
 ### RuTracker integration

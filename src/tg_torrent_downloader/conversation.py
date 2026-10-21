@@ -57,6 +57,7 @@ _HELP = (
     "Download confirms sending the selected torrent to Transmission. Back restores the same list."
 )
 _LABELS = {
+    "results": "search results",
     "reload": "reload",
     "menu": "menu",
     "login": "log in",
@@ -459,7 +460,7 @@ class TelegramConversation:
             await self._abandon_download(c)
             c.query, c.search, c.selected = "", None, None
             await self._authenticate(c, "query")
-        elif action == "back":
+        elif action in {"back", "results"}:
             await self._abandon_download(c)
             await self._results(c)
         elif action == "retry":
@@ -624,14 +625,22 @@ class TelegramConversation:
         for outcome in outcomes:
             await self._text(chat_id, self._outcome_text(outcome))
 
+    @staticmethod
+    def _submission_text(outcome: DownloadOutcome) -> str:
+        return {
+            SelectionStatus.ACCEPTED: "Accepted by Transmission.",
+            SelectionStatus.DUPLICATE: "Already in Transmission (duplicate).",
+            SelectionStatus.FOUND: "Confirmed present in Transmission.",
+            SelectionStatus.CLAIMED: "Transmission submission is in progress.",
+            SelectionStatus.SUBMITTING: "Transmission submission is in progress.",
+            SelectionStatus.UNCERTAIN: (
+                "Transmission acceptance is uncertain. Use /status to check."
+            ),
+        }.get(outcome.selection.status, "Not accepted by Transmission.")
+
     async def _download(self, c: Conversation, *, reauthenticate: bool = True) -> None:
         c.resume = "download"
         self._stage(c, "downloading")
-        await self._text(
-            c.chat_id,
-            "Processing the confirmed torrent. You can /cancel waiting; "
-            "/status checks its outcome.",
-        )
         client = await self._client(c)
         try:
             outcome = await self.workflow.download(
@@ -650,7 +659,7 @@ class TelegramConversation:
         c.selected = outcome.selection
         c.download_claim = None
         self._stage(c, "description")
-        await self._screen(c, self._outcome_text(outcome), ("download", "back"))
+        await self._screen(c, self._submission_text(outcome), ("results", "downloads"))
 
     async def _execute(self, c: Conversation, action) -> None:
         task = asyncio.current_task()
@@ -796,20 +805,21 @@ class TelegramConversation:
         c.search = await asyncio.to_thread(self.store.get_search, c.search.id, c.user_id, c.chat_id)
         c.selected = None
         self._stage(c, "results")
-        lines = []
+        self._keyboard(c, ())  # Old controls stay invalid even if sending a row fails.
         for index, result in enumerate(c.search.results, 1):
             metadata = []
             if result.size:
                 metadata.append(result.size)
             if result.seeds is not None:
                 metadata.append(f"Seeds: {result.seeds}")
-            lines.append(
-                f"{index}. {result.title}" + ("\n" + " · ".join(metadata) if metadata else "")
+            await self._text(
+                c.chat_id,
+                f"{index}. {result.title}" + ("\n" + " · ".join(metadata) if metadata else ""),
             )
         await self._screen(
             c,
-            "\n\n".join(lines) + "\n\nChoose a numbered button or send a new search query.",
-            tuple(f"pick{index}" for index in range(1, len(lines) + 1)),
+            "Choose a numbered button or send a new search query.",
+            tuple(f"pick{index}" for index in range(1, len(c.search.results) + 1)),
         )
 
     async def _topic(self, c: Conversation, *, reauthenticate: bool = True) -> None:
