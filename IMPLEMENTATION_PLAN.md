@@ -50,7 +50,9 @@ Validation: synthetic metainfo and local fake-RPC tests for acceptance, duplicat
 
 Wire the Download action (explicit confirmation) to the atomic state transition, RuTracker torrent retrieval, and Transmission submission. Report accepted, duplicate, failed, and uncertain outcomes accurately. Reconcile interrupted submissions on restart, handle repeated button clicks, and clean up temporary data. Ensure cancellation and unconfirmed selections never fetch torrent files or submit tasks.
 
-Validation: integration tests with fake upstream services covering the full workflow, concurrent clicks, restarts, and ambiguous RPC outcomes.
+Implementation checkpoint: confirmed Download wiring, metainfo validation/hash persistence, durable found outcomes and unresolved-hash guard, cancellation-aware SQLite writes, login/CAPTCHA resumption, /status, and startup recovery under a single-process database lock are implemented. Metainfo stays in memory. Operational readiness remains step 7.
+
+Validation: fake upstream integration tests cover the full workflow, concurrent/foreign/stale clicks, cancellation during I/O and commits, schema migrations, restart recovery, scoped status, and uncertain RPC outcomes. A live selected-torrent submission remains a separate user-authorized test.
 
 ## 7. Operational readiness and acceptance review
 

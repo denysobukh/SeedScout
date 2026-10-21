@@ -4,6 +4,7 @@ Each operation owns its connection and transaction. No connections cross thread 
 Only claim_confirmation authorizes torrent retrieval. begin_submission must commit before RPC.
 """
 
+import fcntl
 import json
 import math
 import os
@@ -30,6 +31,10 @@ class StateError(ValueError):
     """The requested transition is forbidden or the state is unavailable."""
 
 
+class UnresolvedTorrent(StateError):
+    """A prior submission of this hash still has an unresolved outcome."""
+
+
 class Unavailable(StateError):
     """Unknown ID or wrong user/chat; intentionally indistinguishable."""
 
@@ -53,13 +58,13 @@ _SCHEMA = (
         position INTEGER NOT NULL CHECK(position >= 0),
         user_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, result TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN
-            ('pending','claimed','submitting','uncertain','accepted','duplicate','failed','cancelled')),
+            ('pending','claimed','submitting','uncertain','accepted','duplicate','found','failed','cancelled')),
         created_at REAL NOT NULL, expires_at REAL NOT NULL, updated_at REAL NOT NULL,
         claim_token TEXT, info_hash TEXT, transmission_id INTEGER, transmission_name TEXT,
         UNIQUE(search_id, position),
-        CHECK(status NOT IN ('claimed','submitting','uncertain','accepted','duplicate')
+        CHECK(status NOT IN ('claimed','submitting','uncertain','accepted','duplicate','found')
             OR claim_token IS NOT NULL),
-        CHECK(status NOT IN ('submitting','uncertain','accepted','duplicate')
+        CHECK(status NOT IN ('submitting','uncertain','accepted','duplicate','found')
             OR info_hash IS NOT NULL)
     )""",
     "CREATE INDEX selections_status ON selections(status)",
@@ -107,9 +112,52 @@ class WorkflowStore:
                     user_id INTEGER PRIMARY KEY, username TEXT NOT NULL,
                     password TEXT NOT NULL, validated_at REAL NOT NULL
                 )""")
-                db.execute("PRAGMA user_version = 2")
-            elif version != 2:
+                version = 2
+            if version == 2:
+                db.execute(
+                    _SCHEMA[1].replace(
+                        "CREATE TABLE selections (", "CREATE TABLE selections_v3 (", 1
+                    )
+                )
+                db.execute("INSERT INTO selections_v3 SELECT * FROM selections")
+                db.execute("DROP TABLE selections")
+                db.execute("ALTER TABLE selections_v3 RENAME TO selections")
+                db.execute(_SCHEMA[2])
+                db.execute("CREATE INDEX selections_hash_status ON selections(info_hash,status)")
+                db.execute("PRAGMA user_version = 3")
+            elif version != 3:
                 raise StateError("Unsupported workflow database schema version")
+
+    @contextmanager
+    def runtime_lock(self) -> Iterator[None]:
+        """Keep a single bot worker/recovery process per database (POSIX host)."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        path = self.path.with_name(self.path.name + ".runtime.lock")
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise StateError("Another bot process is using this workflow database") from None
+            yield
+        finally:
+            os.close(descriptor)
+
+    def history(self, user_id: int, chat_id: int, *, limit: int = 10) -> tuple[Selection, ...]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("History limit must be between 1 and 100")
+        with self._transaction() as db:
+            rows = db.execute(
+                """SELECT * FROM selections WHERE user_id=? AND chat_id=?
+                AND (status IN ('claimed','submitting','uncertain') OR id IN (
+                    SELECT id FROM selections WHERE user_id=? AND chat_id=?
+                    AND status IN ('accepted','duplicate','found','failed')
+                    ORDER BY updated_at DESC,rowid DESC LIMIT ?
+                )) ORDER BY updated_at DESC,rowid DESC""",
+                (user_id, chat_id, user_id, chat_id, limit),
+            ).fetchall()
+            return tuple(self._selection(row) for row in rows)
 
     def get_credentials(self, user_id: int) -> RuTrackerCredentials | None:
         with self._transaction() as db:
@@ -268,6 +316,7 @@ class WorkflowStore:
         chat_id: int,
         *,
         cancel: bool,
+        claim_token: str | None = None,
     ) -> Selection:
         with self._transaction() as db:
             row = self._owned(
@@ -282,7 +331,7 @@ class WorkflowStore:
                 "UPDATE selections SET status=?,claim_token=?,updated_at=? WHERE id=?",
                 (
                     SelectionStatus.CANCELLED if cancel else SelectionStatus.CLAIMED,
-                    None if cancel else uuid4().hex,
+                    None if cancel else (claim_token or uuid4().hex),
                     self.clock(),
                     selection_id,
                 ),
@@ -300,8 +349,14 @@ class WorkflowStore:
         )
         return selection
 
-    def claim_confirmation(self, selection_id: str, user_id: int, chat_id: int) -> Selection:
-        return self._user_transition(selection_id, user_id, chat_id, cancel=False)
+    def claim_confirmation(
+        self, selection_id: str, user_id: int, chat_id: int, *, claim_token: str | None = None
+    ) -> Selection:
+        if claim_token is not None and not re.fullmatch(r"[0-9a-f]{32}", claim_token):
+            raise ValueError("Worker claim token is invalid")
+        return self._user_transition(
+            selection_id, user_id, chat_id, cancel=False, claim_token=claim_token
+        )
 
     def cancel(self, selection_id: str, user_id: int, chat_id: int) -> Selection:
         return self._user_transition(selection_id, user_id, chat_id, cancel=True)
@@ -326,6 +381,15 @@ class WorkflowStore:
                 or row["status"] not in expected
             ):
                 raise InvalidTransition("Worker claim or state is invalid")
+            if (
+                target == SelectionStatus.SUBMITTING
+                and db.execute(
+                    """SELECT 1 FROM selections WHERE info_hash=? AND id<>?
+                AND status IN ('submitting','uncertain') LIMIT 1""",
+                    (info_hash, selection_id),
+                ).fetchone()
+            ):
+                raise UnresolvedTorrent("An earlier submission of this torrent is still unresolved")
             db.execute(
                 """UPDATE selections SET status=?,info_hash=?,transmission_id=?,
                 transmission_name=?,updated_at=? WHERE id=?""",
@@ -376,20 +440,25 @@ class WorkflowStore:
         duplicate: bool,
         transmission_id: int,
         transmission_name: str,
+        found: bool = False,
     ) -> Selection:
+        if duplicate and found:
+            raise ValueError("A reconciled result cannot claim a known duplicate outcome")
         if type(transmission_id) is not int or transmission_id < 0 or not transmission_name.strip():
             raise ValueError("A Transmission ID and name are required")
         return self._worker_transition(
             selection_id,
             claim_token,
             (SelectionStatus.SUBMITTING, SelectionStatus.UNCERTAIN),
-            SelectionStatus.DUPLICATE if duplicate else SelectionStatus.ACCEPTED,
+            SelectionStatus.FOUND
+            if found
+            else (SelectionStatus.DUPLICATE if duplicate else SelectionStatus.ACCEPTED),
             transmission_id=transmission_id,
             transmission_name=transmission_name,
         )
 
     def fail(self, selection_id: str, claim_token: str) -> Selection:
-        """Only for a known failure, or an uncertain outcome proven absent via RPC lookup.
+        """Only for a known failure; a missing immediate RPC lookup is not proof of failure.
 
         A failed selection cannot be reclaimed; a fresh search/confirmation is required.
         Do not store raw upstream errors here, since they may contain credentials.

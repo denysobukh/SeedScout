@@ -31,3 +31,6 @@ dist/
 .rutracker-cookies.txt
 .rutracker-user-agent.txt
 rutracker_login.html
+
+# Single-process workflow recovery lock
+*.runtime.lock

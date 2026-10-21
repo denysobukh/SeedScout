@@ -11,6 +11,7 @@ class SelectionStatus(StrEnum):
     UNCERTAIN = "uncertain"
     ACCEPTED = "accepted"
     DUPLICATE = "duplicate"
+    FOUND = "found"
     FAILED = "failed"
     CANCELLED = "cancelled"
 

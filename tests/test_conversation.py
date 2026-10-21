@@ -4,7 +4,10 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import AnswerCallbackQuery
 from aiogram.types import CallbackQuery, Chat, Message, User
+from workflow_fakes import DATA, HASH, FakeTransmission
 
 from tg_torrent_downloader.conversation import TelegramConversation, split_text
 from tg_torrent_downloader.models import RuTrackerCredentials, SelectionStatus, TorrentResult
@@ -19,6 +22,13 @@ from tg_torrent_downloader.rutracker import (
     UnrecognizedSearchResults,
 )
 from tg_torrent_downloader.storage import WorkflowStore
+from tg_torrent_downloader.transmission import (
+    AddStatus,
+    SubmissionUncertain,
+    TransmissionRejected,
+    TransmissionTorrent,
+)
+from tg_torrent_downloader.workflow import DownloadWorkflow
 
 
 class FakeBot:
@@ -40,6 +50,9 @@ class FakeTracker:
         self.opened = self.closed = False
         self.ensure_calls = 0
         self.queries, self.topics, self.answers = [], [], []
+        self.downloads, self.download_outcomes = [], []
+        self.download_wait = None
+        self.download_entered = asyncio.Event()
         self.auth_outcomes, self.search_outcomes, self.topic_outcomes, self.captcha_outcomes = (
             [],
             [],
@@ -86,7 +99,11 @@ class FakeTracker:
         return self.outcome(self.topic_outcomes, TopicDetails(result, self.description))
 
     async def download_torrent(self, topic_id):
-        raise AssertionError("Step 4 must never retrieve torrent bytes")
+        self.downloads.append(topic_id)
+        self.download_entered.set()
+        if self.download_wait:
+            await self.download_wait.wait()
+        return self.outcome(self.download_outcomes, DATA)
 
 
 def message(text, user_id=1, chat_id=10):
@@ -128,8 +145,15 @@ class Harness:
             return client
 
         self.factory = factory
+        self.rpc = FakeTransmission()
+        self.workflow = DownloadWorkflow(self.store, lambda: self.rpc)
         self.flow = TelegramConversation(
-            self.bot, self.store, frozenset({1, 2}), factory, clock=lambda: self.now[0]
+            self.bot,
+            self.store,
+            frozenset({1, 2}),
+            factory,
+            workflow=self.workflow,
+            clock=lambda: self.now[0],
         )
 
     @property
@@ -226,17 +250,19 @@ def test_description_and_back_preserve_search_and_numbering(h):
     asyncio.run(run())
 
 
-def test_download_placeholder_does_not_claim_or_fetch_torrent(h):
+def test_download_confirms_once_and_reports_durable_acceptance(h):
     async def run():
         await h.search()
         await h.send("1")
         selected = h.state.selected
         await h.click("Download")
         await h.click("Download")
-        assert "not enabled" in h.bot.messages[-1]["text"]
+        assert "Accepted by Transmission" in h.bot.messages[-1]["text"]
+        assert "Transmission ID: 7" in h.bot.messages[-1]["text"]
+        assert h.client.downloads == [1] and len(h.rpc.adds) == 1
         stored = h.store.get_selection(selected.id, 1, 10)
-        assert stored.status == SelectionStatus.PENDING
-        assert stored.claim_token is None
+        assert stored.status == SelectionStatus.ACCEPTED
+        assert stored.claim_token is not None
 
     asyncio.run(run())
 
@@ -387,7 +413,7 @@ def test_restart_rejects_old_controls_without_using_persisted_selection(h):
         await h.search()
         await h.send("1")
         old = h.button("Download")
-        fresh = TelegramConversation(h.bot, h.store, frozenset({1}), h.factory)
+        fresh = TelegramConversation(h.bot, h.store, frozenset({1}), h.factory, workflow=h.workflow)
         await fresh.handle_callback(callback(old))
         assert "expired" in h.bot.answers[-1]["text"]
         assert len(h.clients) == 1
@@ -650,7 +676,9 @@ def test_new_user_login_password_steps_and_restart_reuse(tmp_path):
         assert h.state.stage == "query"
         assert h.store.get_credentials(1) == pair
         await h.flow.close()
-        h.flow = TelegramConversation(h.bot, h.store, frozenset({1, 2}), h.factory)
+        h.flow = TelegramConversation(
+            h.bot, h.store, frozenset({1, 2}), h.factory, workflow=h.workflow
+        )
         await h.send("/start")
         assert h.state.stage == "query"
         assert h.client.credentials == pair
@@ -770,5 +798,209 @@ def test_group_chat_does_not_collect_credentials(h):
         await h.flow.handle_message(group)
         assert not h.flow.sessions and not h.clients
         assert "private chat" in h.bot.messages[-1]["text"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "status,phrase",
+    [
+        (AddStatus.DUPLICATE, "duplicate"),
+        (AddStatus.FOUND, "Confirmed present"),
+    ],
+)
+def test_download_reports_duplicate_and_reconciled_presence_honestly(h, status, phrase):
+    async def run():
+        await h.search()
+        await h.click("2")
+        h.rpc.status = status
+        await h.click("Download")
+        assert phrase in h.bot.messages[-1]["text"]
+        assert h.state.actions == ("download", "back")
+        assert h.client.downloads == [2]
+
+    asyncio.run(run())
+
+
+def test_simultaneous_download_clicks_do_not_repeat_retrieval_or_add(h):
+    async def run():
+        await h.search()
+        await h.click("1")
+        h.rpc.wait = asyncio.Event()
+        data = h.button("Download")
+        first = asyncio.create_task(h.flow.handle_callback(callback(data)))
+        await h.rpc.entered.wait()
+        await h.flow.handle_callback(callback(data))
+        assert "Working" in h.bot.answers[-1]["text"]
+        h.rpc.wait.set()
+        await first
+        assert h.client.downloads == [1] and len(h.rpc.adds) == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("captcha", [False, True])
+def test_confirmed_download_reauthenticates_and_resumes_same_selection(h, captcha):
+    async def run():
+        await h.search()
+        await h.click("3")
+        selected = h.state.selected
+        h.client.download_outcomes = [AuthenticationRequired("expired"), DATA]
+        if captcha:
+            h.client.auth_outcomes = [
+                CaptchaChallenge("download", 1, 10, b"image", "image/png", 1300)
+            ]
+        await h.click("Download")
+        if captcha:
+            assert h.state.stage == "captcha" and not h.rpc.adds
+            assert h.store.get_selection(selected.id, 1, 10).status == SelectionStatus.CLAIMED
+            await h.send("answer")
+        assert h.state.selected.id == selected.id
+        assert h.state.selected.status == SelectionStatus.ACCEPTED
+        assert h.client.downloads == [3, 3] and len(h.rpc.adds) == 1
+        assert h.state.download_claim is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("command", ["/cancel", "/search", "/start"])
+def test_abandoning_download_captcha_never_submits(h, command):
+    async def run():
+        await h.search()
+        await h.click("1")
+        selected = h.state.selected
+        h.client.download_outcomes = [AuthenticationRequired("expired")]
+        h.client.auth_outcomes = [CaptchaChallenge("download", 1, 10, b"image", "image/png", 1300)]
+        await h.click("Download")
+        await h.send(command)
+        assert h.store.get_selection(selected.id, 1, 10).status == SelectionStatus.FAILED
+        assert not h.rpc.adds
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "phase,expected", [("fetch", SelectionStatus.FAILED), ("add", SelectionStatus.UNCERTAIN)]
+)
+def test_cancel_download_updates_durable_state_and_reports_status(h, phase, expected):
+    async def run():
+        await h.search()
+        await h.click("1")
+        selected = h.state.selected
+        if phase == "fetch":
+            h.client.download_wait = asyncio.Event()
+            entered = h.client.download_entered
+        else:
+            h.rpc.wait = asyncio.Event()
+            entered = h.rpc.entered
+        task = asyncio.create_task(h.click("Download"))
+        await entered.wait()
+        await h.send("/cancel")
+        await asyncio.gather(task, return_exceptions=True)
+        assert not h.flow.sessions
+        assert h.store.get_selection(selected.id, 1, 10).status == expected
+        assert len(h.rpc.adds) == (1 if phase == "add" else 0)
+        await h.send("/status")
+        assert ("uncertain" if phase == "add" else "failed") in h.bot.messages[-1]["text"]
+
+    asyncio.run(run())
+
+
+def test_status_after_restart_is_scoped_and_read_only(h):
+    async def run():
+        await h.search()
+        await h.click("1")
+        h.rpc.add_error = SubmissionUncertain(HASH)
+        await h.click("Download")
+        assert "uncertain" in h.bot.messages[-1]["text"]
+        await h.flow.close()
+        h.rpc.found = TransmissionTorrent(7, "test.bin", HASH)
+        await h.send("/status", user_id=2)
+        assert "No recent" in h.bot.messages[-1]["text"]
+        await h.send("/status")
+        assert "Confirmed present" in h.bot.messages[-1]["text"]
+        assert not h.flow.sessions and len(h.rpc.adds) == 1
+
+    asyncio.run(run())
+
+
+def test_download_rejection_is_safe_and_avoids_secret_logging(h, caplog):
+    async def run():
+        await h.search()
+        await h.click("1")
+        h.rpc.add_error = TransmissionRejected("private-response")
+        with caplog.at_level(logging.INFO):
+            await h.click("Download")
+        assert h.state.selected.status == SelectionStatus.FAILED
+        assert "private-response" not in caplog.text
+        assert "private-response" not in h.bot.messages[-1]["text"]
+        assert DATA.decode() not in caplog.text
+
+    asyncio.run(run())
+
+
+def test_confirmed_download_survives_replacing_rejected_login(h):
+    async def run():
+        await h.search()
+        await h.click("1")
+        selected = h.state.selected
+        h.client.download_outcomes = [AuthenticationRequired("expired")]
+        h.client.auth_outcomes = [InvalidCredentials("rejected")]
+        await h.click("Download")
+        assert h.state.stage == "login" and h.state.download_claim is not None
+        assert not h.rpc.adds
+        await h.send("replacement-user")
+        await h.send("replacement-password")
+        assert h.state.selected.id == selected.id
+        assert h.state.selected.status == SelectionStatus.ACCEPTED
+        assert h.client.downloads == [1] and len(h.rpc.adds) == 1
+
+    asyncio.run(run())
+
+
+def test_foreign_and_restart_download_controls_never_fetch_torrent(h):
+    async def run():
+        await h.search()
+        await h.click("1")
+        data = h.button("Download")
+        await h.flow.handle_callback(callback(data, user_id=2))
+        await h.flow.handle_callback(callback(data, chat_id=20))
+        fresh = TelegramConversation(h.bot, h.store, frozenset({1}), h.factory, workflow=h.workflow)
+        await fresh.handle_callback(callback(data))
+        assert not h.client.downloads and not h.rpc.adds
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_expired_telegram_callback_is_quiet_and_never_starts_download(h, active, caplog):
+    async def run():
+        if active:
+            await h.search()
+            await h.click("1")
+            data = h.button("Download")
+        else:
+            data = "sc:old:download"
+
+        async def expired(**kwargs):
+            raise TelegramBadRequest(
+                method=AnswerCallbackQuery(callback_query_id="expired"),
+                message=(
+                    "Bad Request: query is too old and response timeout expired "
+                    "or query ID is invalid"
+                ),
+            )
+
+        h.bot.answer_callback_query = expired
+        with caplog.at_level(logging.INFO):
+            await h.flow.handle_callback(callback(data))
+        assert "telegram.callback.expired" in caplog.text
+        assert not h.rpc.adds
+        if active:
+            assert not h.client.downloads
+            assert h.state.task is None
+            assert (
+                h.store.get_selection(h.state.selected.id, 1, 10).status == SelectionStatus.PENDING
+            )
 
     asyncio.run(run())

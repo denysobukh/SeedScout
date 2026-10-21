@@ -20,15 +20,15 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 
 ### Telegram interaction
 
-- Provide `/start` and `/help` commands explaining how to search and add a torrent.
+- Provide `/start` and `/help` commands explaining how to search and add a torrent, and `/status` for owned recent/unresolved confirmations.
 - Accept nonempty text queries and provide clear feedback for empty or unsupported input.
 - Request server-side seed sorting (`o=10&s=2`) and sort parsed results locally before taking ten. Keep source order for equal seed counts and put unknown counts after zero. Pagination remains deferred; local ranking covers the returned search page.
 - Omit RuTracker topic URLs from the search result list; show numbered titles, size, and seed count when available.
 - Show one numbered button per displayed result (1–10, or fewer), replacing New search and Cancel buttons on the results list. Arrange up to five numeric buttons per row.
 - Accept a numbered button or a typed valid displayed result number as selection input. Any other nonempty text on the results screen starts a new search using the original text unchanged, including out-of-range numbers. On the description screen, every nonempty text input, including valid result numbers and unrecognized slash-prefixed strings, starts a new search unchanged. Recognized commands and CAPTCHA answers retain their dedicated behavior.
-- Provide only Download and Back buttons on the description; omit New search and Cancel buttons. /start, /search, /help, and /cancel remain commands. Initial results are limited to the top 10; pagination is deferred.
+- Provide only Download and Back buttons on the description; omit New search and Cancel buttons. /start, /search, /status, /help, and /cancel remain commands. Initial results are limited to the top 10; pagination is deferred.
 - Keep search results and pending selections scoped to the requesting user and chat.
-- Prevent another user from confirming someone else's selection.
+- Prevent another user from confirming someone else's selection. If Telegram reports an expired callback acknowledgement, abort the action before any claim, retrieval, or submission.
 - Expire stale selections and explain how to search again.
 - Do not download a torrent file or submit it to Transmission before confirmation.
 
@@ -60,7 +60,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Report an already-added torrent as a duplicate instead of claiming a new download was created.
 - Prevent repeated confirmation clicks from adding the same pending selection multiple times.
 - If a submission times out or has an ambiguous result, look up the persisted hash. Report a match as confirmed present without claiming a new add versus duplicate. If missing or lookup fails, keep the operation uncertain and block add replay; immediate absence alone does not prove that an in-flight add cannot finish.
-- Keep uncertain operations blocked across restarts through durable workflow state. Persist identity before the add RPC; cancellation during submission also requires recovery. Step 6 supplies the durable orchestration around the step 5 adapter.
+- Keep uncertain operations blocked across restarts through durable workflow state. Persist identity before the add RPC; cancellation during submission also requires recovery. The confirmed workflow supplies durable orchestration around the RPC adapter.
 
 ## Configuration and security
 
@@ -69,7 +69,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Never commit credentials, session cookies, downloaded torrent files, or local runtime state.
 - Do not expose credentials, tokens, or cookies in logs or Telegram messages.
 - Validate selection identifiers against server-side state; never trust callback data as an arbitrary download URL.
-- Clean up temporary torrent files after submission or failure.
+- Keep torrent metainfo in memory and release it after completion/failure; do not create temporary torrent files.
 
 ## Reliability and observability
 
@@ -81,14 +81,17 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Log search, selection, confirmation, and submission outcomes, including safe error details. Response bodies are not required in the log.
 - Use a configurable log-file path with bounded rotation and retention. Keep log files out of Git.
 - Provide clear user-facing errors and allow retrying a failed operation without silently choosing another torrent.
-- A restarted bot must reject any pending selection it cannot safely restore and ask the user to search again.
+- A restarted bot must reject stale UI controls and ask for a new search rather than restoring an unconfirmed selection. Hold a single-process lock for the database before startup recovery and for the running bot’s lifetime.
+- On startup, fail interrupted claims that never began submission; convert submitting operations to uncertain and look up their hashes. Resolve presence as a separate found outcome; absence/unreachable RPC remains uncertain. Never fetch or add during recovery.
+- `/status` lists only the requesting user/chat’s confirmations, including every unresolved operation and up to ten recent terminal results. It reconciles by lookup only, stopping further RPC checks after an offline failure.
+- Apply a transactional hash guard across selections to prevent fresh confirmations bypassing submitting/uncertain operations. Let pending SQLite writes settle before propagating cancellation. Retain acknowledged success when cancellation arrives after its commit.
 
 ## Acceptance criteria
 
 - A search returns matching RuTracker topics with enough available detail to distinguish releases.
 - A no-results search produces a clear response and permits another query.
 - Selecting a result displays the exact release and requires explicit confirmation.
-- Cancellation creates no Transmission task and downloads no torrent file.
+- Before confirmation, cancellation creates no Transmission task and retrieves no torrent file. After confirmation, cancellation stops the bot operation; any add already issued is retained as uncertain or acknowledged and is not removed from Transmission.
 - Confirmation downloads the chosen torrent file and submits that same torrent to Transmission.
 - Successful submission reports acceptance; a duplicate is identified correctly.
 - Repeated confirmation and uncertain RPC outcomes do not create duplicate submissions.

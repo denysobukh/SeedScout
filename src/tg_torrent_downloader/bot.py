@@ -9,6 +9,8 @@ from tg_torrent_downloader.config import Settings
 from tg_torrent_downloader.conversation import TelegramConversation
 from tg_torrent_downloader.rutracker import RuTrackerClient
 from tg_torrent_downloader.storage import WorkflowStore
+from tg_torrent_downloader.transmission import TransmissionClient
+from tg_torrent_downloader.workflow import DownloadWorkflow
 
 
 def create_router(conversation: TelegramConversation) -> Router:
@@ -20,7 +22,14 @@ def create_router(conversation: TelegramConversation) -> Router:
 
 async def run_bot(settings: Settings) -> None:
     store = WorkflowStore(settings.database_path)
-    await asyncio.to_thread(store.initialize)
+    with store.runtime_lock():
+        await asyncio.to_thread(store.initialize)
+        workflow = DownloadWorkflow(store, lambda: TransmissionClient.from_settings(settings))
+        await workflow.recover_startup()
+        await _poll(settings, store, workflow)
+
+
+async def _poll(settings: Settings, store: WorkflowStore, workflow: DownloadWorkflow) -> None:
     bot = Bot(settings.telegram_bot_token)
     conversation = TelegramConversation(
         bot,
@@ -32,6 +41,7 @@ async def run_bot(settings: Settings) -> None:
             user_id=user_id,
             chat_id=chat_id,
         ),
+        workflow=workflow,
     )
     dispatcher = Dispatcher(disable_fsm=True)
     dispatcher.include_router(create_router(conversation))

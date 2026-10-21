@@ -1,4 +1,4 @@
-"""Telegram search conversation; no torrent retrieval or Transmission submission."""
+"""Telegram search, explicit download confirmation, and durable outcome reporting."""
 
 import asyncio
 import sqlite3
@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
@@ -37,14 +37,20 @@ from tg_torrent_downloader.rutracker import (
     UnrecognizedSearchResults,
 )
 from tg_torrent_downloader.storage import Expired, StateError, WorkflowStore
+from tg_torrent_downloader.workflow import (
+    DownloadAuthenticationRequired,
+    DownloadOutcome,
+    DownloadWorkflow,
+)
 
 _HELP = (
     "Seed Scout\n/start — connect to RuTracker and begin a search\n"
-    "/search — new search\n/cancel — cancel the current operation\n/help — this guide\n\n"
+    "/search — new search\n/status — check recent downloads\n"
+    "/cancel — stop the current bot operation\n/help — this guide\n\n"
     "Enter your RuTracker login and password when prompted, then solve any login CAPTCHA. "
     "Send your query, then choose a numbered button or type its number. "
     "Send other text to search again. "
-    "Back restores the same list. Downloads will be enabled in a later step."
+    "Download confirms sending the selected torrent to Transmission. Back restores the same list."
 )
 _LABELS = {
     "new": "New search",
@@ -89,6 +95,7 @@ class Conversation:
     query: str = ""
     search: Search | None = None
     selected: Selection | None = None
+    download_claim: Selection | None = None
     resume: str = "query"
     task: asyncio.Task | None = None
 
@@ -101,12 +108,14 @@ class TelegramConversation:
         allowed_users: frozenset[int],
         client_factory: Callable[[int, int, str, str], RuTrackerClient],
         *,
+        workflow: DownloadWorkflow,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.bot = bot
         self.store = store
         self.allowed_users = allowed_users
         self.client_factory = client_factory
+        self.workflow = workflow
         self.clock = clock
         self.sessions: dict[tuple[int, int], Conversation] = {}
 
@@ -118,6 +127,26 @@ class TelegramConversation:
                 if attempt == 2 or error.retry_after > 30:
                     raise
                 await asyncio.sleep(error.retry_after)
+
+    async def _ack(self, callback_id: str, *, text: str | None = None) -> bool:
+        values = {"callback_query_id": callback_id}
+        if text is not None:
+            values["text"] = text
+        try:
+            await self._call(self.bot.answer_callback_query, **values)
+        except TelegramBadRequest as error:
+            if any(
+                marker in error.message.casefold()
+                for marker in (
+                    "query is too old",
+                    "response timeout expired",
+                    "query id is invalid",
+                )
+            ):
+                diagnostic_event("telegram.callback.expired")
+                return False
+            raise
+        return True
 
     async def _text(self, chat_id: int, text: str, markup=None) -> None:
         chunks = split_text(text)
@@ -170,17 +199,13 @@ class TelegramConversation:
         conversation.task = asyncio.current_task()
         if conversation.selected is not None:
             try:
-                await asyncio.to_thread(
-                    self.store.cancel,
-                    conversation.selected.id,
-                    conversation.user_id,
-                    conversation.chat_id,
-                )
+                await self.workflow.cancel(conversation.selected, claim=conversation.download_claim)
             except StateError, sqlite3.Error:
-                # Expired or nonpending selections cannot be cancelled; never reset them.
+                # Preserve the durable record if storage cleanup is unavailable.
                 pass
         if conversation.client:
             await conversation.client.close()
+        conversation.download_claim = None
         conversation.credentials = None
         conversation.pending_username = None
         conversation.challenge = None
@@ -245,10 +270,20 @@ class TelegramConversation:
         if command == "/cancel":
             if conversation:
                 await self._discard(conversation)
-            await self._text(chat_id, "Cancelled. Use /start to begin again.")
+            await self._text(
+                chat_id,
+                "Stopped the bot operation. Use /status to check confirmed downloads, "
+                "or /start to search.",
+            )
             return
         if conversation and conversation.task:
             await self._text(chat_id, "An operation is running. You can /cancel it.")
+            return
+        if command == "/status":
+            if conversation:
+                await self._execute(conversation, self._status(user_id, chat_id))
+            else:
+                await self._status(user_id, chat_id)
             return
         if conversation and self.clock() - conversation.touched_at >= 900:
             conversation.task = asyncio.current_task()
@@ -273,6 +308,7 @@ class TelegramConversation:
 
     async def _message_action(self, c: Conversation, text: str | None, command: str) -> None:
         if command in {"/start", "/search"}:
+            await self._abandon_download(c)
             c.query, c.search, c.selected = "", None, None
             await self._authenticate(c, "query")
         elif command and c.stage not in {"login", "password", "description"}:
@@ -340,16 +376,10 @@ class TelegramConversation:
 
     async def handle_callback(self, callback: CallbackQuery) -> None:
         if callback.from_user.id not in self.allowed_users:
-            await self._call(
-                self.bot.answer_callback_query, callback_query_id=callback.id, text="Access denied."
-            )
+            await self._ack(callback.id, text="Access denied.")
             return
         if not isinstance(callback.message, Message):
-            await self._call(
-                self.bot.answer_callback_query,
-                callback_query_id=callback.id,
-                text="Use /start in the bot chat.",
-            )
+            await self._ack(callback.id, text="Use /start in the bot chat.")
             return
         c = self.sessions.get((callback.from_user.id, callback.message.chat.id))
         pieces = (callback.data or "").split(":")
@@ -361,29 +391,29 @@ class TelegramConversation:
             and pieces[2] in c.actions
         )
         if not valid or self.clock() - c.touched_at >= 900:
-            await self._call(
-                self.bot.answer_callback_query,
-                callback_query_id=callback.id,
-                text="This control expired. Use /start or the latest buttons.",
+            await self._ack(
+                callback.id, text="This control expired. Use /start or the latest buttons."
             )
             return
         action = pieces[2]
         log_user_input(c.user_id, c.chat_id, action)
         if c.task and action != "cancel":
-            await self._call(
-                self.bot.answer_callback_query,
-                callback_query_id=callback.id,
-                text="Working; you can cancel.",
-            )
+            await self._ack(callback.id, text="Working; you can cancel.")
             return
         if action == "cancel":
-            await self._call(self.bot.answer_callback_query, callback_query_id=callback.id)
+            if not await self._ack(callback.id):
+                return
             await self._discard(c)
-            await self._text(c.chat_id, "Cancelled. Use /start to begin again.")
+            await self._text(
+                c.chat_id,
+                "Stopped the bot operation. Use /status to check confirmed downloads, "
+                "or /start to search.",
+            )
             return
         c.task = asyncio.current_task()
         try:
-            await self._call(self.bot.answer_callback_query, callback_query_id=callback.id)
+            if not await self._ack(callback.id):
+                return
             c.touched_at = self.clock()
             await self._execute(c, self._callback_action(c, action))
         finally:
@@ -394,30 +424,99 @@ class TelegramConversation:
         if action.startswith("pick"):
             await self._select_result(c, int(action[4:]) - 1)
         elif action == "new":
+            await self._abandon_download(c)
             c.query, c.search, c.selected = "", None, None
             await self._authenticate(c, "query")
         elif action == "back":
+            await self._abandon_download(c)
             await self._results(c)
         elif action == "retry":
             if c.resume == "search":
                 await self._search(c)
             elif c.resume == "topic":
                 await self._topic(c)
+            elif c.resume == "download":
+                await self._download(c)
             else:
                 await self._authenticate(c, "query")
         elif action == "download":
-            # Step 4 only: do not claim confirmation or fetch .torrent bytes yet.
-            await asyncio.to_thread(self.store.get_search, c.search.id, c.user_id, c.chat_id)
-            selected = await asyncio.to_thread(
-                self.store.get_selection, c.selected.id, c.user_id, c.chat_id
+            await self._download(c)
+
+    async def _abandon_download(self, c: Conversation) -> None:
+        if c.download_claim is not None:
+            await self.workflow.cancel(c.download_claim, claim=c.download_claim)
+            c.download_claim = None
+
+    @staticmethod
+    def _outcome_text(outcome: DownloadOutcome) -> str:
+        selected = outcome.selection
+        descriptions = {
+            SelectionStatus.ACCEPTED: (
+                "Accepted by Transmission. Queued; completion is not confirmed."
+            ),
+            SelectionStatus.DUPLICATE: "Already in Transmission (duplicate).",
+            SelectionStatus.FOUND: (
+                "Confirmed present in Transmission. New versus duplicate is unknown."
+            ),
+            SelectionStatus.CLAIMED: "This confirmed download request is in progress.",
+            SelectionStatus.SUBMITTING: "Submission is in progress. Use /status to check it.",
+            SelectionStatus.UNCERTAIN: (
+                "Submission outcome is uncertain. Use /status to check. "
+                "No add will be retried while unresolved."
+            ),
+            SelectionStatus.FAILED: (
+                "Download request failed. Start a new search and confirm again to retry."
+            ),
+            SelectionStatus.CANCELLED: "This selection was cancelled.",
+        }
+        description = descriptions.get(selected.status, "Awaiting confirmation.")
+        text = f"{selected.result.title}\n{description}"
+        if selected.transmission_id is not None:
+            text += (
+                f"\nName: {selected.transmission_name}\nTransmission ID: {selected.transmission_id}"
             )
-            if selected.status != SelectionStatus.PENDING:
-                await self._text(c.chat_id, f"This selection is already {selected.status}.")
-            else:
-                await self._text(
-                    c.chat_id,
-                    "Downloads are not enabled yet. You can go Back or start a new search.",
-                )
+        if outcome.note:
+            text += "\n" + outcome.note
+        return text
+
+    async def _status(self, user_id: int, chat_id: int) -> None:
+        try:
+            outcomes = await self.workflow.recent(user_id, chat_id)
+        except sqlite3.Error:
+            await self._text(chat_id, "Local download storage is unavailable. Try /status again.")
+            return
+        if not outcomes:
+            await self._text(chat_id, "No recent confirmed downloads in this chat.")
+        for outcome in outcomes:
+            await self._text(chat_id, self._outcome_text(outcome))
+
+    async def _download(self, c: Conversation, *, reauthenticate: bool = True) -> None:
+        c.resume = "download"
+        self._stage(c, "downloading")
+        await self._text(
+            c.chat_id,
+            "Processing the confirmed torrent. You can /cancel waiting; "
+            "/status checks its outcome.",
+        )
+        client = await self._client(c)
+        try:
+            outcome = await self.workflow.download(
+                c.selected.id,
+                c.user_id,
+                c.chat_id,
+                client.download_torrent,
+                resume_claim=c.download_claim,
+            )
+        except DownloadAuthenticationRequired as error:
+            c.download_claim = error.selection
+            if not reauthenticate:
+                raise
+            await self._authenticate(c, "download")
+            return
+        c.selected = outcome.selection
+        c.download_claim = None
+        self._stage(c, "description")
+        await self._screen(c, self._outcome_text(outcome), ("download", "back"))
 
     async def _execute(self, c: Conversation, action) -> None:
         task = asyncio.current_task()
@@ -525,6 +624,8 @@ class TelegramConversation:
             await self._search(c, reauthenticate=False)
         elif c.resume == "topic":
             await self._topic(c, reauthenticate=False)
+        elif c.resume == "download":
+            await self._download(c, reauthenticate=False)
         else:
             c.query, c.search, c.selected = "", None, None
             self._stage(c, "query")

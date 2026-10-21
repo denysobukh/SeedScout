@@ -6,11 +6,11 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 
 ## Current checkpoint
 
-- Language: Python, approved by the user. Repository: main; latest approved commit is 2e02cf5 (simplified torrent detail controls).
-- Steps 1–4, diagnostic logging, Playwright login, SQLite credentials, seed-ranked results, and UI updates are committed.
-- Step 5 is approved for commit: standalone Transmission RPC client and BitTorrent v1 validator. Step 6 (confirmed download/submission orchestration) has not started; Download is still a placeholder.
-- Read-only live verification: installed Transmission 4.1.3, RPC 19/API 6.0.1; the new client negotiated the session and confirmed a missing-hash lookup. No torrent was retrieved or submitted. Live submissions require explicit authorization for the selected test torrent.
-- User approved committing step 5. Next action: implement step 6 when authorized. Use the latest log entries rather than older historical runtime status when resuming.
+- Language: Python. Repository: main; latest approved commit is 8e2a941 (step 5 Transmission client and torrent validation).
+- Steps 1–5 and the approved search/login/UI updates are committed. User approved committing step 6, including confirmed downloads, status reporting, and recovery.
+- Step 6 connects explicit Download confirmation to retrieval, validation, durable submission and outcome reporting. It adds /status, schema version 3/found outcomes, transactional unresolved-hash guards, cancellation-safe writes, and startup recovery under a per-database runtime lock.
+- Agent verification used synthetic torrents and fake services only for submissions. Earlier read-only live checks reached Transmission 4.1.3/RPC 19/API 6.0.1; no agent-initiated live torrent retrieval/submission has been performed.
+- Next action: step 7 (operational readiness and acceptance review) when authorized. A user-selected live end-to-end torrent test remains pending.
 
 ## Step tracker
 
@@ -23,8 +23,8 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 3a | Diagnostic logging follow-up | Approved; committed |
 | 3b | Playwright browser-session login | Approved; committed |
 | 4 | Telegram search and selection | Approved; committed |
-| 5 | Transmission integration | Approved; included in this commit |
-| 6 | Confirmed download and submission | Not started |
+| 5 | Transmission integration | Approved; committed as 8e2a941 |
+| 6 | Confirmed download and submission | Approved; included in this commit |
 | 7 | Operational readiness and acceptance | Not started |
 
 ## Validation and review log
@@ -235,3 +235,22 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Final verification: full regression suite 308 passed; after final diagnostic and dependency metadata changes, all 142 focused validator/RPC/configuration tests passed. Ruff lint and formatting, offline lock regeneration, and git whitespace checks passed. Locked dependency versions are unchanged (aiohttp 3.14.5); only its supported minimum increased. No live add, torrent retrieval, or Telegram Download wiring was performed. Step 5 is ready for review and remains uncommitted; next action is user review before commit, followed by step 6 when authorized.
 
 - User approved committing step 5. Included the Transmission client, v1 metainfo validator, synthetic/fake-server tests, shared configuration validation, dependency metadata, and documentation. Validation remains 308 full-suite tests passed and 142 final focused tests passed, with lint/format and whitespace checks passed. Step 6 has not started.
+
+## Step 6 review checkpoint — Confirmed download and submission
+
+- User authorized proceeding with the next step after committing step 5. Implemented DownloadWorkflow and connected Telegram Download to the exact stored topic, with ownership/expiry validation and an atomic confirmation claim before any torrent retrieval.
+- The confirmed workflow validates in-memory v1 metainfo, checks RPC availability read-only, commits identity/submitting state, then sends base64 data via the existing adapter. It stores accepted, duplicate, found, failed, and uncertain outcomes and reports available Transmission name/ID. Repeated/competing confirmations do not retrieve or add again.
+- Added schema version 3 with the distinct durable found outcome and a hash/status index. A transactional guard blocks a new selection from submitting a hash already submitting/uncertain. Migration preserves searches, selections, claim tokens, and credentials.
+- RuTracker login/CAPTCHA pauses retain only the initiating user/chat’s exact claim and resume the same topic. Cancellation, new search, restart, or idle cleanup safely settles an abandoned unsubmitted claim. Cancellation during an uncertain add retains submitting/uncertain state; acknowledged results are preserved.
+- SQLite worker writes are shielded until their transaction finishes before cancellation is propagated. Tests cancel after claim, begin_submission, and finish commits to verify no late add/false failure. No temporary torrent files are created.
+- Startup uses an owner-only POSIX database runtime lock, preventing another worker/recovery process from using the same database path. Recovery fails old unsubmitted claims, marks submitting work uncertain, and performs hash lookups only. Presence resolves to found; empty/unavailable results stay blocked without replay.
+- Added private, allowlisted /status that works without /start, scopes history by user/chat, retains every unresolved operation plus ten recent terminal results, and stops further lookups after an unavailable-service response. Existing detail controls remain Download/Back and text-to-search behavior remains intact.
+- Added synthetic/fake-daemon tests for complete submission over the actual RPC adapter, accepted/duplicate/found/rejected/uncertain outcomes, hash guard races, schema migration, cancellation, credential/CAPTCHA resumption, foreign/stale controls, restart recovery, lock exclusion, and owned status reporting.
+- Validation: all 352 tests passed, with no warnings; Ruff lint passed. Final documentation/whitespace and local runtime status follow below. No live torrent was retrieved or submitted by the agent. Changes remain uncommitted for user review.
+
+- Local startup: created an ignored owner-only schema-v2 backup, then initialized schema v3 under the runtime lock. Recovery found no interrupted submissions. The bot received /start and authenticated successfully; no live torrent was requested by the agent.
+- Startup also received an expired Telegram callback from earlier testing. It was already rejected by the stale-screen gate, but Telegram rejected its acknowledgement with BadRequest. Added a safe acknowledgement helper that treats expired query IDs as an inactive control and aborts even a currently matching action before any claim/retrieval. Raw server errors are not logged. Added active/stale callback regressions and temporarily stopped the bot for final validation/restart.
+
+- Final validation after expired-callback protection: all 354 regression tests passed with no warnings; Ruff lint/format and whitespace checks passed. The reservation-before-acknowledgement concurrency test remains in place. Restarting the updated bot for Telegram review; Download is now active and /status performs reconciliation only. Live end-to-end torrent submission remains unverified until the user explicitly chooses a test torrent. Changes remain uncommitted; next action is user review, then commit only when requested.
+
+- User approved committing step 6. Included the confirmed-download coordinator, Telegram Download and /status integration, durable found outcomes and unresolved-hash guard, schema migration, runtime lock, expired-callback protection, tests, and documentation. Validation: 354 tests passed with no warnings; Ruff lint/format and whitespace checks passed. Local bot was restarted for review; no agent-triggered live torrent submission was performed. Step 7 remains pending user instruction.

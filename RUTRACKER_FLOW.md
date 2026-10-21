@@ -46,18 +46,29 @@ The user approved this flow. Download is the explicit confirmation; no extra con
 7. **Open selected torrent topic**
    - Follow its stored RuTracker topic link; retrieve the full release description.
    - Show the description as safe text, retaining useful links, split across Telegram messages when needed; include the source link.
-   - Offer only Download and Back → 8; omit New search and Cancel buttons. Every nonempty text input, including numbers and unknown slash-prefixed strings, starts a new search → 5 unchanged. /start, /search, /help, and /cancel retain their command behavior.
+   - Offer only Download and Back → 8; omit New search and Cancel buttons. Every nonempty text input, including numbers and unknown slash-prefixed strings, starts a new search → 5 unchanged. /start, /search, /status, /help, and /cancel retain their command behavior.
    - Topic unavailable → explain, return to 6.
    - Session expired → 2–3, then retry 7 with the saved topic.
    - Network error → offer Retry → 7 or Back → 6.
 8. **Release decision**
    - Back → 6, preserving results and numbering.
-   - Download → atomic confirmation, retrieve this exact .torrent, submit it to Transmission, and report its outcome.
+   - Download → atomically claim the owned, unexpired pending selection before retrieving this exact .torrent.
+   - RuTracker authentication expires during retrieval → retain this claim → 2–3 → resume retrieval of the same topic. Cancel/new search abandons the unsubmitted claim as failed.
+   - Validate v1 metainfo, commit the hash and submitting state, and enforce the unresolved-hash guard before add. Retrieval/validation/preflight/explicit rejection failures → fail; fresh search and confirmation are required.
+   - Transmission accepts → report name/ID and acceptance; duplicate → report already present. Reconciled presence → report confirmed present without claiming new versus duplicate.
+   - An ambiguous add → hash lookup; present → found, absent/unreachable → uncertain. Never replay the add while unresolved.
+   - /cancel stops waiting and retrieval before submission. Once add may have started, preserve uncertainty or an acknowledged result; do not remove the queued torrent.
    - Repeated Download clicks → report the existing operation status without another submission.
+
+9. **Restart and /status**
+   - Hold the database runtime lock before recovery; reject another worker using that database.
+   - Startup: interrupted claimed work → failed; submitting → uncertain; uncertain → lookup only. Presence → found; missing/offline → retain uncertainty.
+   - /status → owned user/chat confirmations, including all unresolved operations and up to ten terminal results; lookup only. Stop further lookups in a pass after the first unavailable-service response.
+   - Old controls never restore or re-confirm a download. /start creates a fresh search. All torrent bytes remain in memory.
 
 ## Implementation boundaries
 
 - Step 3: RuTracker session/login operations, user/chat-scoped CAPTCHA lifecycle, top-10 search parsing, full topic descriptions, and a separate torrent retrieval method.
 - Step 4: Telegram prompts, image delivery and answer collection, numeric selection, split descriptions, and Download/Back navigation. Persist or safely reject interaction state after restart.
-- Step 6: wire Download to the confirmed torrent retrieval and Transmission workflow.
+- Step 6: confirmed retrieval/submission, durable hash guards, cancellation, scoped status reporting, and restart reconciliation.
 - Authentication retries resume the saved operation; never silently change a query or selected topic.
