@@ -6,8 +6,8 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 
 ## Current checkpoint
 
-- Language: Python. Repository: main; latest approved commit is 8e2a941 (step 5 Transmission client and torrent validation).
-- Steps 1–5 and the approved search/login/UI updates are committed. User approved committing step 6, including confirmed downloads, status reporting, and recovery.
+- Language: Python. Repository: main; latest approved commit is 3ebde71 (step 6 confirmed downloads and recovery).
+- Steps 1–6 and the approved search/login/UI updates are committed. User approved committing removal of all Cancel buttons and shorter login/search prompts.
 - Step 6 connects explicit Download confirmation to retrieval, validation, durable submission and outcome reporting. It adds /status, schema version 3/found outcomes, transactional unresolved-hash guards, cancellation-safe writes, and startup recovery under a per-database runtime lock.
 - Agent verification used synthetic torrents and fake services only for submissions. Earlier read-only live checks reached Transmission 4.1.3/RPC 19/API 6.0.1; no agent-initiated live torrent retrieval/submission has been performed.
 - Next action: step 7 (operational readiness and acceptance review) when authorized. A user-selected live end-to-end torrent test remains pending.
@@ -24,7 +24,7 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 | 3b | Playwright browser-session login | Approved; committed |
 | 4 | Telegram search and selection | Approved; committed |
 | 5 | Transmission integration | Approved; committed as 8e2a941 |
-| 6 | Confirmed download and submission | Approved; included in this commit |
+| 6 | Confirmed download and submission | Approved; committed as 3ebde71 |
 | 7 | Operational readiness and acceptance | Not started |
 
 ## Validation and review log
@@ -254,3 +254,17 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Final validation after expired-callback protection: all 354 regression tests passed with no warnings; Ruff lint/format and whitespace checks passed. The reservation-before-acknowledgement concurrency test remains in place. Restarting the updated bot for Telegram review; Download is now active and /status performs reconciliation only. Live end-to-end torrent submission remains unverified until the user explicitly chooses a test torrent. Changes remain uncommitted; next action is user review, then commit only when requested.
 
 - User approved committing step 6. Included the confirmed-download coordinator, Telegram Download and /status integration, durable found outcomes and unresolved-hash guard, schema migration, runtime lock, expired-callback protection, tests, and documentation. Validation: 354 tests passed with no warnings; Ruff lint/format and whitespace checks passed. Local bot was restarted for review; no agent-triggered live torrent submission was performed. Step 7 remains pending user instruction.
+
+## Remove Cancel buttons throughout the conversation
+
+- User requested removing every Cancel button. Removed the action from all login/password/CAPTCHA, query, progress, and error keyboards, along with its callback handler/label. Empty action lists now send no reply markup while still invalidating old controls.
+- Kept /cancel as a text command and preserved its existing cleanup and submission-state behavior. Updated the specification, flow, plan, README, and existing conversation expectations.
+- Changes remain uncommitted for user review. Validation and runtime status follow below.
+- Validation: all 67 conversation tests passed; Ruff lint/format and whitespace checks passed. No Cancel callback actions remain in the conversation. The prior bot process was no longer running; starting the updated app for the ongoing Telegram review. Send /start for fresh screens. Changes remain uncommitted.
+
+## Shorter login and search prompts
+
+- User requested exact message text: "Checking RuTracker login." and "Send a search query". Updated both prompts. Included with the uncommitted Cancel-button removal for review.
+- Validation: all 67 conversation tests passed; Ruff lint/format and whitespace checks passed. Starting the updated bot for the ongoing Telegram review; prompts and Cancel-button removal remain uncommitted.
+
+- User approved committing Cancel-button removal and the exact shortened login/search prompts. Included docs and updated conversation expectations. Validation: 67 conversation tests passed; Ruff lint/format and whitespace checks passed. Step 7 remains pending user instruction.

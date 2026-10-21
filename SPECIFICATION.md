@@ -20,6 +20,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 
 ### Telegram interaction
 
+- Do not show Cancel buttons anywhere in the conversation. Keep `/cancel` as a text command with existing cancellation behavior.
 - Provide `/start` and `/help` commands explaining how to search and add a torrent, and `/status` for owned recent/unresolved confirmations.
 - Accept nonempty text queries and provide clear feedback for empty or unsupported input.
 - Request server-side seed sorting (`o=10&s=2`) and sort parsed results locally before taking ten. Keep source order for equal seed counts and put unknown counts after zero. Pagination remains deferred; local ranking covers the returned search page.
@@ -40,7 +41,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Check authentication before asking for a query. If login is needed, use the rendered login form (`login_username`, `login_password`) and POST the user’s credentials to `/forum/login.php` with the imported browser session.
 - Reuse the session for later search, topic, and torrent requests. If access is denied, invalidate the browser session and require fresh browser verification on retry; never automatically replay a login POST. Keep cookies and rendered HTML in memory, out of logs and Git. Restart requires fresh verification.
 - Store validated RuTracker login/password pairs in SQLite, scoped to the allowed Telegram user. Reuse them after restarts. If credentials are absent, prompt for login and password in two separate private-chat steps before attempting authentication.
-- Invalid credentials → remove that rejected saved pair, show the failure and login prompt with Cancel only (no New search or automatic Retry), then collect password and attempt authentication again. Repeat until authenticated or cancelled. Keep interrupted search/description state for resumption.
+- Invalid credentials → remove that rejected saved pair, show the failure and login prompt without buttons (no New search or automatic Retry), then collect password and attempt authentication again. Repeat until authenticated or cancelled. Keep interrupted search/description state for resumption.
 - Keep candidate credentials in memory until successful authentication, including any CAPTCHA challenge. Never save rejected or unverified pairs. Redact login/password inputs before logging and protect the local credential database with owner-only file permissions.
 - When login requires CAPTCHA, deliver its image to the requesting user, submit their answer, and repeat with a refreshed image when necessary. Allow CAPTCHA image GET requests only from the legacy RuTracker CAPTCHA endpoint or HTTPS static.rutracker.cc/captcha/; use a separate cookie-free session for the CDN and never forward login headers, credentials, or session cookies to it. Scope challenges and answers to that user and chat, expire challenges, and support cancellation.
 - Preserve queries and selected topics across session reauthentication. Retrieve the full release description only after selection; opening a description must not download a torrent file.

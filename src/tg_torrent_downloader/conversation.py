@@ -54,7 +54,6 @@ _HELP = (
 )
 _LABELS = {
     "new": "New search",
-    "cancel": "Cancel",
     "retry": "Retry",
     "back": "Back",
     "download": "Download",
@@ -162,7 +161,7 @@ class TelegramConversation:
 
     def _keyboard(
         self, conversation: Conversation, actions: tuple[str, ...]
-    ) -> InlineKeyboardMarkup:
+    ) -> InlineKeyboardMarkup | None:
         conversation.token = uuid4().hex
         conversation.actions = actions
         buttons = [
@@ -172,6 +171,8 @@ class TelegramConversation:
             )
             for action in actions
         ]
+        if not buttons:
+            return None
         return InlineKeyboardMarkup(
             inline_keyboard=[buttons[i : i + 5] for i in range(0, len(buttons), 5)]
         )
@@ -319,7 +320,7 @@ class TelegramConversation:
             c.pending_username = text
             register_secrets(text)
             self._stage(c, "password")
-            await self._screen(c, "Enter your RuTracker password, or /cancel.", ("cancel",))
+            await self._screen(c, "Enter your RuTracker password, or /cancel.", ())
         elif c.stage == "password":
             register_secrets(text)
             c.credentials = RuTrackerCredentials(c.pending_username, text)
@@ -397,18 +398,8 @@ class TelegramConversation:
             return
         action = pieces[2]
         log_user_input(c.user_id, c.chat_id, action)
-        if c.task and action != "cancel":
-            await self._ack(callback.id, text="Working; you can cancel.")
-            return
-        if action == "cancel":
-            if not await self._ack(callback.id):
-                return
-            await self._discard(c)
-            await self._text(
-                c.chat_id,
-                "Stopped the bot operation. Use /status to check confirmed downloads, "
-                "or /start to search.",
-            )
+        if c.task:
+            await self._ack(callback.id, text="Working; you can /cancel.")
             return
         c.task = asyncio.current_task()
         try:
@@ -542,14 +533,14 @@ class TelegramConversation:
                 await self._screen(
                     c,
                     "This search or selection is unavailable. Start a new search.",
-                    ("new", "cancel"),
+                    ("new",),
                 )
             elif isinstance(error, InvalidCredentials):
                 if c.credentials:
                     await asyncio.to_thread(self.store.forget_credentials, c.user_id, c.credentials)
                 await self._prompt_login(c, failed=True)
             else:
-                await self._screen(c, str(error), ("retry", "new", "cancel"))
+                await self._screen(c, str(error), ("retry", "new"))
         except (TelegramAPIError, sqlite3.Error) as error:
             self._stage(c, "error")
             diagnostic_event(
@@ -577,8 +568,8 @@ class TelegramConversation:
         self._stage(c, "authenticating")
         await self._screen(
             c,
-            "Checking RuTracker login. Chrome may open for browser verification. You can /cancel.",
-            ("cancel",),
+            "Checking RuTracker login.",
+            (),
         )
         client = await self._client(c)
         c.challenge = await client.ensure_authenticated()
@@ -597,7 +588,7 @@ class TelegramConversation:
         c.challenge = None
         self._stage(c, "login")
         prefix = "RuTracker login failed. Please try again.\n" if failed else ""
-        await self._screen(c, prefix + "Enter your RuTracker login, or /cancel.", ("cancel",))
+        await self._screen(c, prefix + "Enter your RuTracker login, or /cancel.", ())
 
     async def _captcha(self, c: Conversation) -> None:
         if c.challenge.user_id != c.user_id or c.challenge.chat_id != c.chat_id:
@@ -612,7 +603,7 @@ class TelegramConversation:
             photo=BufferedInputFile(c.challenge.image, filename=f"captcha.{extension}"),
             caption="Type the characters in this CAPTCHA, or /cancel.",
             parse_mode=None,
-            reply_markup=self._keyboard(c, ("cancel",)),
+            reply_markup=self._keyboard(c, ()),
         )
 
     async def _resume(self, c: Conversation) -> None:
@@ -629,12 +620,12 @@ class TelegramConversation:
         else:
             c.query, c.search, c.selected = "", None, None
             self._stage(c, "query")
-            await self._screen(c, "What would you like to find? Send a search query.", ("cancel",))
+            await self._screen(c, "Send a search query", ())
 
     async def _search(self, c: Conversation, *, reauthenticate: bool = True) -> None:
         c.resume = "search"
         self._stage(c, "searching")
-        await self._screen(c, "Searching RuTracker…", ("cancel",))
+        await self._screen(c, "Searching RuTracker…", ())
         client = await self._client(c)
         try:
             results = await client.search(c.query)
@@ -645,7 +636,7 @@ class TelegramConversation:
             return
         if not results:
             self._stage(c, "query")
-            await self._screen(c, "No matches found. Send another query.", ("new", "cancel"))
+            await self._screen(c, "No matches found. Send another query.", ("new",))
             return
         c.search = await asyncio.to_thread(
             self.store.save_search, c.user_id, c.chat_id, c.query, results[:10]
@@ -677,7 +668,7 @@ class TelegramConversation:
         c.resume = "topic"
         await asyncio.to_thread(self.store.get_search, c.search.id, c.user_id, c.chat_id)
         self._stage(c, "loading_topic")
-        await self._screen(c, "Loading the selected release…", ("cancel",))
+        await self._screen(c, "Loading the selected release…", ())
         client = await self._client(c)
         try:
             details = await client.get_topic(c.selected.result)

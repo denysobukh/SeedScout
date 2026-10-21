@@ -370,9 +370,10 @@ def test_invalid_credentials_return_to_login_without_search_or_retry(h):
         await h.send("/start")
         assert "retry" not in h.state.actions
         assert h.state.stage == "login"
-        assert h.state.actions == ("cancel",)
+        assert h.state.actions == ()
         assert "login failed" in h.bot.messages[-1]["text"]
         assert "Enter your RuTracker login" in h.bot.messages[-1]["text"]
+        assert h.bot.messages[-1]["reply_markup"] is None
         assert h.store.get_credentials(1) is None
         assert h.client.closed
 
@@ -548,7 +549,8 @@ def test_old_controls_and_unknown_actions_cannot_start_work(h):
         await h.flow.handle_callback(callback(forged))
         assert "expired" in h.bot.answers[-1]["text"]
         assert not h.client.topics and not h.client.queries
-        old = h.button("Cancel")
+        await h.send("ubuntu")
+        old = h.button("1")
         await h.send("/start")
         assert h.clients[0].closed
         await h.flow.handle_callback(callback(old))
@@ -699,7 +701,7 @@ def test_bad_credentials_loop_until_valid_and_never_persist_candidates(tmp_path)
             await h.send(f"wrong-{attempt}")
             assert h.state.stage == "password"
             await h.send("bad-password")
-            assert h.state.stage == "login" and h.state.actions == ("cancel",)
+            assert h.state.stage == "login" and h.state.actions == ()
             assert h.store.get_credentials(1) is None
             assert client.closed and h.state.credentials is None
         await h.send("valid-user")

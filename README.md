@@ -33,7 +33,7 @@ Start the bot from the project root:
 uv run --locked tg-torrent-downloader
 ```
 
-RuTracker login and password are stored per Telegram user in SQLite, rather than environment variables. In a private chat, `/start` reuses stored credentials; if none exist, the bot asks for login, then password in separate messages. A rejected pair returns to the login prompt with Cancel only, repeating until authentication succeeds or you cancel. CAPTCHA challenges remain part of authentication. Only a successfully authenticated pair is saved, including when authentication completes after CAPTCHA; interrupted searches and descriptions resume afterward. Old `RUTRACKER_USERNAME` / `RUTRACKER_PASSWORD` environment variables are ignored and should be removed from `.env`.
+RuTracker login and password are stored per Telegram user in SQLite, rather than environment variables. In a private chat, `/start` reuses stored credentials; if none exist, the bot asks for login, then password in separate messages. A rejected pair returns to the login prompt without buttons, repeating until authentication succeeds or you use /cancel. CAPTCHA challenges remain part of authentication. Only a successfully authenticated pair is saved, including when authentication completes after CAPTCHA; interrupted searches and descriptions resume afterward. Old `RUTRACKER_USERNAME` / `RUTRACKER_PASSWORD` environment variables are ignored and should be removed from `.env`.
 
 Credentials are stored as plaintext in the ignored local database, with file permissions restricted to its owner (`0600`). Treat database backups as secrets. Login/password inputs are redacted before logging, and pending credentials are discarded on cancellation, expiry, or restart. Only validated credentials survive restarts; cookies remain in memory.
 
@@ -121,12 +121,14 @@ Cancellation waits for in-flight SQLite writes to settle before classifying the 
 
 ## Telegram conversation
 
+Cancel buttons are omitted from every screen, including login, CAPTCHA, progress, and error responses. `/cancel` remains available as a text command.
+
 - `/start`: authenticate first, solve any CAPTCHA, then enter a query.
 - `/search` or New search: begin another search using the existing client session when valid.
 - Send a query unchanged, then choose a numbered button from the first ten results (or type a valid displayed number). Results show only numeric buttons, up to five per row, matching the number of available torrents. Each result includes available size/seed count, without its topic link. Any other nonempty text, including an out-of-range number, starts a new search unchanged. /cancel remains available.
 - A selection retrieves the full topic description with only Download and Back buttons. Every nonempty text input on this screen starts a new search unchanged, including valid result numbers and unknown slash-prefixed strings; recognized commands retain their behavior. Back restores the same search results and numbering. Download atomically claims that exact selection, retrieves its torrent, validates/persists the hash, and queues it in Transmission. Results report acceptance, duplicate, confirmed presence, failure, or uncertainty with available name/ID.
 - `/status` works without /start, checks only the requesting user/chat, and reports all unresolved operations plus the ten latest terminal results. It only performs lookups and never retrieves or submits torrent files. An offline service stops further lookup attempts in that status pass.
-- `/help` shows instructions. `/cancel` or Cancel stops this bot operation and closes its sessions. Before submission it prevents the add; after submission may have begun, it retains uncertainty or the already acknowledged result. It does not remove queued torrents or stop their content download in Transmission.
+- `/help` shows instructions. `/cancel` stops this bot operation and closes its sessions. Before submission it prevents the add; after submission may have begun, it retains uncertainty or the already acknowledged result. It does not remove queued torrents or stop their content download in Transmission.
 
 Access control runs before upstream operations. Conversation state and controls are bound to the requesting user/chat; each screen has a fresh callback token. Old buttons, wrong-owner controls, and callbacks from before a restart are rejected. Chats are serialized independently, with a responsive cancellation path during browser/network work. Confirmed metainfo workflows share an async lock; waiting tasks remain cancellable and ordinary searches remain responsive.
 
