@@ -1015,15 +1015,16 @@ def test_expired_telegram_callback_is_quiet_and_never_starts_download(h, active,
     asyncio.run(run())
 
 
-def test_start_opens_menu_without_login_or_transmission_requests(h):
+def test_start_checks_login_before_menu_without_transmission_requests(h):
     async def run():
         await h.send("/start")
         assert h.state.stage == "menu"
-        assert h.state.actions == ("login", "search", "downloads")
+        assert h.bot.messages[0]["text"] == "Checking RuTracker login."
+        assert h.state.actions == ("search", "downloads")
         assert h.bot.messages[-1]["text"] == "Menu"
-        assert not h.clients and not h.rpc.adds and not h.rpc.lookups
+        assert h.client.ensure_calls == 1 and not h.rpc.adds and not h.rpc.lookups
         await h.click("search")
-        assert h.state.stage == "query" and h.client.ensure_calls == 1
+        assert h.state.stage == "query" and h.client.ensure_calls == 2
         await h.send("  exact query  ")
         assert h.client.queries == ["  exact query  "]
         await h.flow.close()
@@ -1089,7 +1090,8 @@ def test_menu_checks_expired_or_unavailable_rutracker_session(h, outcome):
 
 
 @pytest.mark.parametrize("state", ["populated", "empty", "offline"])
-def test_downloads_branch_works_without_rutracker_login_and_returns_to_menu(h, state):
+def test_downloads_branch_works_without_rutracker_login_and_returns_to_menu(tmp_path, state):
+    h = Harness(tmp_path, credentials=False)
     from tg_torrent_downloader.transmission import ActiveDownload, TransmissionUnavailable
 
     async def run():
@@ -1132,13 +1134,12 @@ def test_downloads_branch_works_without_rutracker_login_and_returns_to_menu(h, s
 def test_downloads_return_preserves_authenticated_session_and_invalidates_old_menu(h):
     async def run():
         await h.send("/start")
-        old_login = h.button("log in")
-        await h.click("log in")
+        old_downloads = h.button("downloads")
         client = h.client
         await h.click("downloads")
         await h.click("menu")
         assert h.state.actions == ("search", "downloads") and not client.closed
-        await h.flow.handle_callback(callback(old_login))
+        await h.flow.handle_callback(callback(old_downloads))
         assert "expired" in h.bot.answers[-1]["text"]
         assert client.ensure_calls == 1
         await h.flow.close()
@@ -1236,6 +1237,37 @@ def test_reload_fetches_fresh_torrents_and_shows_seeding(h, initial):
         assert h.rpc.active_calls == 2 and not h.rpc.adds
         await h.click("menu")
         assert h.state.stage == "menu"
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["missing", "invalid", "offline", "captcha"])
+def test_start_login_check_handles_missing_invalid_offline_and_captcha(tmp_path, outcome):
+    h = Harness(tmp_path, credentials=outcome != "missing")
+
+    async def run():
+        if outcome == "invalid":
+            h.next_client.auth_outcomes = [InvalidCredentials("bad")]
+        elif outcome == "offline":
+            h.next_client.auth_outcomes = [NetworkError("offline")]
+        elif outcome == "captcha":
+            h.next_client.auth_outcomes = [
+                CaptchaChallenge("start", 1, 10, b"image", "image/png", 1300)
+            ]
+        await h.send("/start")
+        assert h.bot.messages[0]["text"] == "Checking RuTracker login."
+        if outcome == "captcha":
+            assert h.state.stage == "captcha" and h.state.resume == "menu"
+            await h.send("answer")
+            assert h.state.stage == "menu" and "login" not in h.state.actions
+        else:
+            assert h.state.stage == "menu" and "login" in h.state.actions
+            assert h.state.task is None
+            if outcome == "invalid":
+                assert h.store.get_credentials(1) is None
+            await h.click("downloads")
+            assert h.state.stage == "downloads"
         await h.flow.close()
 
     asyncio.run(run())

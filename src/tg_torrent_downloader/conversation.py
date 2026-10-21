@@ -337,7 +337,7 @@ class TelegramConversation:
 
     async def _message_action(self, c: Conversation, text: str | None, command: str) -> None:
         if command == "/start":
-            await self._menu(c)
+            await self._menu(c, startup=True)
         elif command == "/search":
             await self._abandon_download(c)
             c.query, c.search, c.selected = "", None, None
@@ -473,7 +473,7 @@ class TelegramConversation:
         elif action == "download":
             await self._download(c)
 
-    async def _menu(self, c: Conversation) -> None:
+    async def _menu(self, c: Conversation, *, startup: bool = False) -> None:
         await self._abandon_download(c)
         if c.selected is not None:
             try:
@@ -486,8 +486,33 @@ class TelegramConversation:
         if c.credentials_unverified:
             c.credentials = None
             c.credentials_unverified = False
+        c.resume = "menu"
         note = ""
-        if c.client is not None and c.authenticated:
+        if startup:
+            self._stage(c, "authenticating")
+            await self._screen(c, "Checking RuTracker login.", ())
+        if startup and not c.authenticated:
+            if c.client is not None:
+                await c.client.close()
+                c.client = None
+            if c.credentials is None:
+                c.credentials = await asyncio.to_thread(self.store.get_credentials, c.user_id)
+            if c.credentials is not None:
+                register_secrets(c.credentials.username, c.credentials.password)
+                try:
+                    client = await self._client(c)
+                    c.challenge = await client.ensure_authenticated()
+                    if c.challenge:
+                        await self._captcha(c)
+                        return
+                    c.authenticated = True
+                except InvalidCredentials:
+                    await asyncio.to_thread(self.store.forget_credentials, c.user_id, c.credentials)
+                    c.credentials = None
+                    note = "\nRuTracker login failed. Use log in to enter your credentials."
+                except RuTrackerError:
+                    note = "\nCould not verify RuTracker login. Use log in to retry."
+        elif c.client is not None and c.authenticated:
             try:
                 c.authenticated = await c.client.check_authenticated()
             except RuTrackerError:

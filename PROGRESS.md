@@ -6,11 +6,11 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 
 ## Current checkpoint
 
-- Language: Python. Repository: main; latest approved commit is 4f4e016 (Transmission app startup).
+- Language: Python. Repository: main; latest approved commit is 98a1394 (menu, active torrents, reload, and Google links).
 - Steps 1–6 and the approved search/login/UI updates are committed. User approved committing removal of all Cancel buttons and shorter login/search prompts.
 - Step 6 connects explicit Download confirmation to retrieval, validation, durable submission and outcome reporting. It adds /status, schema version 3/found outcomes, transactional unresolved-hash guards, cancellation-safe writes, and startup recovery under a per-database runtime lock.
 - Agent verification used synthetic torrents and fake services only for submissions. Earlier read-only live checks reached Transmission 4.1.3/RPC 19/API 6.0.1; no agent-initiated live torrent retrieval/submission has been performed.
-- Menu and active downloads follow-up: user approved committing the menu, seeding visibility correction, reload control, hidden IDs, and Google title links. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
+- /start login-check screen before menu, with log in hidden after successful authentication: approved by the user for commit. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
 
 ## Step tracker
 
@@ -305,3 +305,13 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Validation: 83 conversation tests passed, including exact Google query extraction and UTF-16 G-link offsets across multiple Unicode message chunks. Ruff lint/format and whitespace checks passed. No prior bot process remained; started the updated bot for Telegram review, with Transmission already running and no interrupted recovery operations. Changes remain uncommitted. Use /start → downloads to obtain new controls.
 
 - User approved committing the menu and active Transmission downloads branch, reload/seeding correction, and title Google links with hidden IDs. Includes implementation, tests, specification/flow/README/plan, and progress. Validation: 407 full-suite tests passed before the title-link presentation update; all 83 conversation tests passed after it, with lint/format/whitespace checks passed. Live read-only verification returned 18 seeding torrents. No secrets or runtime files are included. Step 7 acceptance work remains pending.
+
+## Check RuTracker login immediately after /start
+
+- User requested Checking RuTracker login. immediately after /start, with log in omitted from menu after successful authentication. Startup menu now emits that exact progress message before browser/network work. It verifies an existing authenticated session, or uses saved credentials through the existing login/browser flow; startup CAPTCHA resumes menu after success.
+- Missing credentials, rejected saved credentials, or unavailable verification leave a usable menu with log in visible; rejected pairs are forgotten. Existing menu return checks, search resumption, downloads/reload, stale controls, and pending-selection cleanup are preserved. Updated specification, flow, README, and plan to replace the previous immediate-menu behavior.
+- Validation: 87 conversation tests passed covering the first progress message, success/conditional buttons, missing and rejected credentials, network failure, startup CAPTCHA, session expiry, and existing branches. Ruff lint passed; formatting/whitespace and runtime results follow. Changes remain uncommitted for user review.
+
+- Final checks: Ruff lint/format and git whitespace checks passed. No old bot process remained; started the updated app for Telegram review. Startup confirmed Transmission running and zero interrupted recovery operations. Send /start to exercise the new login-check screen. Live RuTracker authentication is left to user review; no agent-triggered login or torrent retrieval/submission was performed. Changes remain uncommitted.
+
+- User approved committing the /start login check and conditional menu controls. Includes implementation, 87 passing conversation tests, and updated specification, flow, README, plan, and progress. Lint/format/whitespace checks passed. Restarted the bot again at the user’s request for verification before approval; startup was healthy. Remaining step 7 acceptance work stays pending.

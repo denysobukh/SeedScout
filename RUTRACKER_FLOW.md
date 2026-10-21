@@ -3,7 +3,7 @@
 The user approved this flow. Download is the explicit confirmation; no extra confirmation screen is required. No screen shows a Cancel button; `/cancel` remains a text command.
 
 M. **Menu screen after /start**
-   - A fresh session shows **log in**, **search**, and **downloads**, without launching browser verification. Stored credentials alone do not mean authenticated.
+   - /start first shows **Checking RuTracker login.**. Check an existing authenticated session, or use saved credentials with browser/login verification (0–3). Successful check → menu with **search** and **downloads**, hiding **log in**. Missing credentials or rejected/unverifiable startup login → menu with **log in** visible; forget a rejected stored pair. CAPTCHA → 3 → M on success. Stored credentials alone do not mean authenticated.
    - An existing authenticated session is checked on menu entry: verified → hide log in; expired/unverifiable → show log in. Keep a valid client session across navigation.
    - log in → 0–3; success → M. search → 0–3 as needed, then 4.
    - downloads → D. /start from any idle branch → M, abandoning pending selections/claims and invalidating old controls.
