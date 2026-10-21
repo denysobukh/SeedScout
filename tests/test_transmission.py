@@ -441,3 +441,80 @@ def test_malformed_add_responses_are_reconciled_without_another_add(mode):
         assert daemon.adds == 1 and daemon.queries == 1
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("modern", [True, False])
+def test_active_downloads_are_read_only_and_filter_states(modern):
+    daemon = Daemon(modern=modern)
+    progress = "percent_done" if modern else "percentDone"
+    rate = "rate_download" if modern else "rateDownload"
+    upload = "rate_upload" if modern else "rateUpload"
+    torrents = [
+        dict(
+            id=i,
+            name=f"torrent {i}",
+            status=i,
+            eta=-1,
+            **{progress: 1.0 if i >= 5 else 0.2, rate: 10, upload: 20},
+        )
+        for i in range(7)
+    ]
+    torrents.append(
+        dict(id=9, name="complete", status=4, eta=0, **{progress: 1.0, rate: 0, upload: 30})
+    )
+
+    async def handler(request):
+        data = await request.json()
+        if data["method"] in {"torrent_get", "torrent-get"}:
+            assert (data.get("params") or data.get("arguments")) == {
+                "fields": ["id", "name", "status", progress, rate, upload, "eta"]
+            }
+            return daemon.reply(data, {"torrents": torrents})
+        return await daemon(request)
+
+    async def run():
+        async with server(handler) as url, TransmissionClient(url) as client:
+            downloads = await client.active_downloads()
+        assert [item.id for item in downloads] == [1, 2, 3, 4, 5, 6, 9]
+        assert downloads[0].progress == 0.2 and downloads[0].rate_download == 10
+        assert downloads[-1].progress == 1.0 and downloads[-1].rate_upload == 30
+        assert not daemon.adds
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"status": True},
+        {"status": 7},
+        {"percent_done": float("nan")},
+        {"percent_done": -0.1},
+        {"percent_done": 1.1},
+        {"rate_download": -1},
+        {"rate_upload": -1},
+        {"id": -1},
+        {"name": " "},
+        {"eta": "soon"},
+    ],
+)
+def test_active_downloads_reject_malformed_rows(patch):
+    daemon = Daemon()
+    item = dict(
+        id=1, name="test", status=4, percent_done=0.2, rate_download=0, rate_upload=0, eta=-2
+    )
+    item.update(patch)
+
+    async def handler(request):
+        data = await request.json()
+        if data["method"] == "torrent_get":
+            return daemon.reply(data, {"torrents": [item]})
+        return await daemon(request)
+
+    async def run():
+        async with server(handler) as url, TransmissionClient(url) as client:
+            with pytest.raises(TransmissionProtocolError):
+                await client.active_downloads()
+        assert not daemon.adds
+
+    asyncio.run(run())

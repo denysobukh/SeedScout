@@ -22,6 +22,9 @@ class FakeTransmission:
         self.status = AddStatus.ADDED
         self.add_error = self.connect_error = self.lookup_error = None
         self.found = None
+        self.active = ()
+        self.active_error = None
+        self.active_calls = 0
         self.wait = None
         self.entered = asyncio.Event()
         self.before_add = None
@@ -54,3 +57,9 @@ class FakeTransmission:
         if self.lookup_error:
             raise self.lookup_error
         return self.found
+
+    async def active_downloads(self):
+        self.active_calls += 1
+        if self.active_error:
+            raise self.active_error
+        return self.active

@@ -63,6 +63,17 @@ class TransmissionTorrent:
     info_hash: str
 
 
+@dataclass(frozen=True, repr=False)
+class ActiveDownload:
+    id: int
+    name: str
+    status: int
+    progress: float
+    rate_download: int
+    eta: int
+    rate_upload: int = 0
+
+
 class AddStatus(StrEnum):
     ADDED = "added"
     DUPLICATE = "duplicate"
@@ -303,6 +314,52 @@ class TransmissionClient:
         async with self._lock:
             await self._negotiate()
             return await self._find(info_hash)
+
+    async def active_downloads(self) -> tuple[ActiveDownload, ...]:
+        """Read all running or queued torrents, including seeding, without mutation."""
+        async with self._lock:
+            await self._negotiate()
+            progress_key = "percent_done" if self._info.modern else "percentDone"
+            rate_key = "rate_download" if self._info.modern else "rateDownload"
+            upload_key = "rate_upload" if self._info.modern else "rateUpload"
+            result = await self._rpc(
+                "torrent-get",
+                {"fields": ["id", "name", "status", progress_key, rate_key, upload_key, "eta"]},
+            )
+            torrents = result.get("torrents")
+            if not isinstance(torrents, list):
+                raise TransmissionProtocolError("Transmission download list is invalid")
+            downloads, seen = [], set()
+            for item in torrents:
+                if not isinstance(item, dict):
+                    raise TransmissionProtocolError("Transmission download list is invalid")
+                identifier, name, status = item.get("id"), item.get("name"), item.get("status")
+                progress, rate, eta = item.get(progress_key), item.get(rate_key), item.get("eta")
+                upload = item.get(upload_key)
+                if (
+                    type(identifier) is not int
+                    or identifier < 0
+                    or identifier in seen
+                    or not isinstance(name, str)
+                    or not name.strip()
+                    or type(status) is not int
+                    or status not in range(7)
+                    or type(progress) not in {int, float}
+                    or not 0 <= progress <= 1
+                    or type(rate) is not int
+                    or rate < 0
+                    or type(upload) is not int
+                    or upload < 0
+                    or type(eta) is not int
+                    or eta < -2
+                ):
+                    raise TransmissionProtocolError("Transmission download list is invalid")
+                seen.add(identifier)
+                if status != 0:
+                    downloads.append(
+                        ActiveDownload(identifier, name, status, progress, rate, eta, upload)
+                    )
+            return tuple(sorted(downloads, key=lambda download: download.id))
 
     async def _reconcile(self, info_hash: str) -> AddResult:
         try:

@@ -18,6 +18,7 @@ from tg_torrent_downloader.storage import (
 )
 from tg_torrent_downloader.torrent import InvalidTorrent, validate_torrent
 from tg_torrent_downloader.transmission import (
+    ActiveDownload,
     AddStatus,
     TransmissionAuthenticationError,
     TransmissionClient,
@@ -79,6 +80,10 @@ class DownloadWorkflow:
         self.transmission_factory = transmission_factory
         # Serializes metainfo workflows, not the Telegram event loop or unrelated searches.
         self._lock = asyncio.Lock()
+
+    async def active_downloads(self) -> tuple[ActiveDownload, ...]:
+        async with self.transmission_factory() as client:
+            return await client.active_downloads()
 
     async def _settle(
         self,

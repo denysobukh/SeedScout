@@ -5,6 +5,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from aiogram import Bot
@@ -16,6 +17,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     LinkPreviewOptions,
     Message,
+    MessageEntity,
 )
 
 from tg_torrent_downloader.logging import (
@@ -37,6 +39,7 @@ from tg_torrent_downloader.rutracker import (
     UnrecognizedSearchResults,
 )
 from tg_torrent_downloader.storage import Expired, StateError, WorkflowStore
+from tg_torrent_downloader.transmission import TransmissionError
 from tg_torrent_downloader.workflow import (
     DownloadAuthenticationRequired,
     DownloadOutcome,
@@ -44,7 +47,7 @@ from tg_torrent_downloader.workflow import (
 )
 
 _HELP = (
-    "Seed Scout\n/start — connect to RuTracker and begin a search\n"
+    "Seed Scout\n/start — menu: log in, search, downloads\n"
     "/search — new search\n/status — check recent downloads\n"
     "/cancel — stop the current bot operation\n/help — this guide\n\n"
     "Enter your RuTracker login and password when prompted, then solve any login CAPTCHA. "
@@ -53,6 +56,11 @@ _HELP = (
     "Download confirms sending the selected torrent to Transmission. Back restores the same list."
 )
 _LABELS = {
+    "reload": "reload",
+    "menu": "menu",
+    "login": "log in",
+    "search": "search",
+    "downloads": "downloads",
     "new": "New search",
     "retry": "Retry",
     "back": "Back",
@@ -89,6 +97,7 @@ class Conversation:
     credentials: RuTrackerCredentials | None = None
     pending_username: str | None = None
     credentials_unverified: bool = False
+    authenticated: bool = False
     client: RuTrackerClient | None = None
     challenge: CaptchaChallenge | None = None
     query: str = ""
@@ -147,17 +156,34 @@ class TelegramConversation:
             raise
         return True
 
-    async def _text(self, chat_id: int, text: str, markup=None) -> None:
+    async def _text(
+        self, chat_id: int, text: str, markup=None, *, entities: list[MessageEntity] | None = None
+    ) -> None:
         chunks = split_text(text)
+        offset = 0
         for index, chunk in enumerate(chunks):
+            end = offset + len(chunk.encode("utf-16-le")) // 2
+            chunk_entities = [
+                entity.model_copy(
+                    update={
+                        "offset": max(entity.offset, offset) - offset,
+                        "length": min(entity.offset + entity.length, end)
+                        - max(entity.offset, offset),
+                    }
+                )
+                for entity in entities or []
+                if entity.offset < end and entity.offset + entity.length > offset
+            ]
             await self._call(
                 self.bot.send_message,
                 chat_id=chat_id,
                 text=chunk,
                 parse_mode=None,
+                entities=chunk_entities or None,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
                 reply_markup=markup if index == len(chunks) - 1 else None,
             )
+            offset = end
 
     def _keyboard(
         self, conversation: Conversation, actions: tuple[str, ...]
@@ -188,9 +214,16 @@ class TelegramConversation:
         )
 
     async def _screen(
-        self, conversation: Conversation, text: str, actions: tuple[str, ...]
+        self,
+        conversation: Conversation,
+        text: str,
+        actions: tuple[str, ...],
+        *,
+        entities: list[MessageEntity] | None = None,
     ) -> None:
-        await self._text(conversation.chat_id, text, self._keyboard(conversation, actions))
+        await self._text(
+            conversation.chat_id, text, self._keyboard(conversation, actions), entities=entities
+        )
 
     async def _discard(self, conversation: Conversation) -> None:
         task = conversation.task
@@ -290,11 +323,6 @@ class TelegramConversation:
             conversation.task = asyncio.current_task()
             await self._discard(conversation)
             conversation = None
-        if command == "/start":
-            if conversation:
-                conversation.task = asyncio.current_task()
-                await self._discard(conversation)
-            conversation = None
         if conversation is None:
             if command not in {"/start", "/search"}:
                 await self._text(
@@ -308,7 +336,9 @@ class TelegramConversation:
         await self._execute(conversation, self._message_action(conversation, text, command))
 
     async def _message_action(self, c: Conversation, text: str | None, command: str) -> None:
-        if command in {"/start", "/search"}:
+        if command == "/start":
+            await self._menu(c)
+        elif command == "/search":
             await self._abandon_download(c)
             c.query, c.search, c.selected = "", None, None
             await self._authenticate(c, "query")
@@ -412,7 +442,17 @@ class TelegramConversation:
                 c.task = None
 
     async def _callback_action(self, c: Conversation, action: str) -> None:
-        if action.startswith("pick"):
+        if action == "menu":
+            await self._menu(c)
+        elif action == "login":
+            await self._authenticate(c, "menu")
+        elif action == "search":
+            await self._abandon_download(c)
+            c.query, c.search, c.selected = "", None, None
+            await self._authenticate(c, "query")
+        elif action in {"downloads", "reload"}:
+            await self._downloads(c)
+        elif action.startswith("pick"):
             await self._select_result(c, int(action[4:]) - 1)
         elif action == "new":
             await self._abandon_download(c)
@@ -429,9 +469,86 @@ class TelegramConversation:
             elif c.resume == "download":
                 await self._download(c)
             else:
-                await self._authenticate(c, "query")
+                await self._authenticate(c, c.resume if c.resume == "menu" else "query")
         elif action == "download":
             await self._download(c)
+
+    async def _menu(self, c: Conversation) -> None:
+        await self._abandon_download(c)
+        if c.selected is not None:
+            try:
+                await self.workflow.cancel(c.selected)
+            except StateError:
+                # An expired selection must not prevent navigation back to menu.
+                pass
+        c.query, c.search, c.selected = "", None, None
+        c.challenge, c.pending_username = None, None
+        if c.credentials_unverified:
+            c.credentials = None
+            c.credentials_unverified = False
+        note = ""
+        if c.client is not None and c.authenticated:
+            try:
+                c.authenticated = await c.client.check_authenticated()
+            except RuTrackerError:
+                c.authenticated = False
+                note = "\nCould not verify RuTracker login. Use log in to retry."
+        if not c.authenticated and c.client is not None:
+            await c.client.close()
+            c.client = None
+        c.resume = "menu"
+        self._stage(c, "menu")
+        actions = ("search", "downloads") if c.authenticated else ("login", "search", "downloads")
+        await self._screen(c, "Menu" + note, actions)
+
+    async def _downloads(self, c: Conversation) -> None:
+        self._stage(c, "downloads")
+        await self._screen(c, "Loading active downloads…", ())
+        try:
+            downloads = await self.workflow.active_downloads()
+        except TransmissionError as error:
+            diagnostic_event(
+                "transmission.downloads.failed",
+                error=type(error).__name__,
+                user_id=c.user_id,
+                chat_id=c.chat_id,
+            )
+            await self._screen(
+                c, "Could not load Transmission downloads. Try reload.", ("reload", "menu")
+            )
+            return
+        statuses = {
+            1: "Queued for verification",
+            2: "Verifying",
+            3: "Queued",
+            4: "Downloading",
+            5: "Queued to seed",
+            6: "Seeding",
+        }
+        rows = ["Active Transmission downloads"]
+        entities = []
+        offset = len(rows[0].encode("utf-16-le")) // 2 + 2
+        for index, download in enumerate(downloads, 1):
+            speed = download.rate_download / 1024
+            eta = f"{download.eta // 60} min" if download.eta >= 0 else "unknown"
+            prefix = f"{index}. {download.name} "
+            entities.append(
+                MessageEntity(
+                    type="text_link",
+                    offset=offset + len(prefix.encode("utf-16-le")) // 2,
+                    length=1,
+                    url="https://www.google.com/search?" + urlencode({"q": download.name}),
+                )
+            )
+            rows.append(
+                prefix + "G\n"
+                f"{statuses[download.status]} · {download.progress:.1%} · "
+                f"↓ {speed:.1f} KiB/s · ↑ {download.rate_upload / 1024:.1f} KiB/s · ETA {eta}"
+            )
+            offset += len(rows[-1].encode("utf-16-le")) // 2 + 2
+        if not downloads:
+            rows.append("No active downloads.")
+        await self._screen(c, "\n\n".join(rows), ("reload", "menu"), entities=entities)
 
     async def _abandon_download(self, c: Conversation) -> None:
         if c.download_claim is not None:
@@ -559,6 +676,7 @@ class TelegramConversation:
 
     async def _authenticate(self, c: Conversation, resume: str) -> None:
         c.resume = resume
+        c.authenticated = False
         if c.credentials is None:
             c.credentials = await asyncio.to_thread(self.store.get_credentials, c.user_id)
         if c.credentials is None:
@@ -583,6 +701,7 @@ class TelegramConversation:
             await c.client.close()
             c.client = None
         c.credentials = None
+        c.authenticated = False
         c.pending_username = None
         c.credentials_unverified = False
         c.challenge = None
@@ -607,11 +726,14 @@ class TelegramConversation:
         )
 
     async def _resume(self, c: Conversation) -> None:
+        c.authenticated = True
         if c.credentials_unverified:
             await asyncio.to_thread(self.store.save_credentials, c.user_id, c.credentials)
             c.credentials_unverified = False
         c.challenge = None
-        if c.resume == "search":
+        if c.resume == "menu":
+            await self._menu(c)
+        elif c.resume == "search":
             await self._search(c, reauthenticate=False)
         elif c.resume == "topic":
             await self._topic(c, reauthenticate=False)

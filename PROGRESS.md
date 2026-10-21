@@ -6,11 +6,11 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 
 ## Current checkpoint
 
-- Language: Python. Repository: main; latest approved commit is 0b7c467 (Cancel-button removal and shorter prompts).
+- Language: Python. Repository: main; latest approved commit is 4f4e016 (Transmission app startup).
 - Steps 1–6 and the approved search/login/UI updates are committed. User approved committing removal of all Cancel buttons and shorter login/search prompts.
 - Step 6 connects explicit Download confirmation to retrieval, validation, durable submission and outcome reporting. It adds /status, schema version 3/found outcomes, transactional unresolved-hash guards, cancellation-safe writes, and startup recovery under a per-database runtime lock.
 - Agent verification used synthetic torrents and fake services only for submissions. Earlier read-only live checks reached Transmission 4.1.3/RPC 19/API 6.0.1; no agent-initiated live torrent retrieval/submission has been performed.
-- Transmission app startup follow-up: approved by the user for commit; validation below. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
+- Menu and active downloads follow-up: user approved committing the menu, seeding visibility correction, reload control, hidden IDs, and Google title links. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
 
 ## Step tracker
 
@@ -279,3 +279,29 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Final validation: all 379 regression tests passed; Ruff lint/format, configuration validation, and git whitespace checks passed. Confirmed .env remains ignored. Restarted the updated bot; live startup logged transmission.app.running before download.recovery (zero interrupted operations). Existing Transmission was kept running; actual stopped-app launch is covered by mocks. The bot is running for Telegram review. Changes remain uncommitted.
 
 - User approved committing the Transmission app startup follow-up. Included optional app-path configuration, startup process check/launch and notifications, tests, and documentation. Validation remains 379 passing tests plus lint/format/configuration/whitespace checks. Real .env stays ignored and is excluded from the commit. Remaining step 7 acceptance work is pending.
+
+## Menu and active downloads follow-up
+
+- User requested naming the /start screen Menu with log in (only if not authenticated), search, and downloads. Fresh /start now opens menu immediately; saved credentials alone do not count as a valid session. Returning to menu verifies an existing authenticated session and preserves its client if valid. Log in returns to menu after the existing credentials/CAPTCHA flow; Search and /search retain authentication-before-query and interrupted-operation resumption.
+- Added read-only active_downloads to the existing modern/legacy RPC adapter and workflow boundary. Lists incomplete statuses 1–4 (queued/verifying/downloading), with name/ID, status, progress, speed, and ETA; excludes stopped/finished/seeding. The list covers the configured Transmission instance, including externally added torrents; only allowed private-chat users can view it. Empty and error results retain a menu return button. Long lists use existing safe text splitting.
+- /start clears pending selections/claims and invalidates prior controls without closing a valid authenticated client. Existing credential/search tests now enter through /search; new tests cover menu branch entry, conditional login, invalid credentials/CAPTCHA, expiry/check failure, foreign/stale controls, no-login downloads, long/empty/error lists, and modern/legacy read-only filtering/malformed responses. Updated specification, flow, README, and implementation plan.
+- Focused validation: 129 conversation/RPC tests passed; lint passed after formatting. Full validation and live read-only/runtime results follow. No live torrent retrieval/submission performed. Changes remain uncommitted for user review.
+
+- Final validation: all 403 regression tests passed; Ruff lint/format and whitespace checks passed. Read-only active_downloads succeeded against the configured local Transmission 4.1.3 with zero active entries. Added regressions for both normal pending-selection cancellation and expired selection navigation. Restarted the updated bot for Telegram review; startup confirmed Transmission already running and recovery found zero interrupted operations. Send /start to open Menu. No live torrent retrieval or submission was performed; changes remain uncommitted pending review.
+
+## Downloads reload and seeding visibility correction
+
+- User requested reload on the downloads screen and investigation of an empty list despite active torrents. Read-only inspection of the configured localhost:9091 Transmission found 18 torrents, all status 6 (seeding), zero incomplete and zero downloading at that instant. Retrieval worked; the initial incomplete-only/status 1–4 filter excluded them.
+- Active listing now includes every running/queued torrent in statuses 1–6, including 100%-complete seeders and zero instantaneous traffic; only stopped torrents are excluded. Added upload rate and explicit queued-to-seed/seeding status labels.
+- Added reload to populated, empty, and failure screens alongside menu. Reload fetches a new snapshot, invalidates old controls, and remains read-only. Updated documentation and added reload/stale-control regressions plus modern/legacy filtering and upload-field validation. This supersedes the earlier incomplete-only list definition.
+- Focused validation: all 135 conversation/RPC tests passed. Final validation and runtime results follow. Changes remain uncommitted together with the menu implementation pending user review.
+
+- Final validation: 407 full-suite tests passed; lint/format/whitespace checks passed. Live corrected read-only query returned all 18 status-6 seeding torrents. Started the updated bot (no prior bot process remained); startup confirmed Transmission running and zero interrupted recovery operations. For fresh controls send /start, choose downloads, then reload. No torrent mutation was performed. Menu and reload/seeding changes remain uncommitted for review.
+
+## Torrent title Google links
+
+- User requested hiding Transmission IDs from the active list and adding a G link after each title. Removed visible IDs from this screen and encoded exact titles as Google search queries. Telegram text-link entities preserve literal title characters; UTF-16 offsets are adjusted per message chunk so links survive long lists and emoji. Reload/menu behavior is preserved. Updated docs and existing list checks for hidden IDs, correct search URLs, and links across split messages. Changes remain uncommitted for review; validation follows.
+
+- Validation: 83 conversation tests passed, including exact Google query extraction and UTF-16 G-link offsets across multiple Unicode message chunks. Ruff lint/format and whitespace checks passed. No prior bot process remained; started the updated bot for Telegram review, with Transmission already running and no interrupted recovery operations. Changes remain uncommitted. Use /start → downloads to obtain new controls.
+
+- User approved committing the menu and active Transmission downloads branch, reload/seeding correction, and title Google links with hidden IDs. Includes implementation, tests, specification/flow/README/plan, and progress. Validation: 407 full-suite tests passed before the title-link presentation update; all 83 conversation tests passed after it, with lint/format/whitespace checks passed. Live read-only verification returned 18 seeding torrents. No secrets or runtime files are included. Step 7 acceptance work remains pending.

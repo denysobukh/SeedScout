@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -49,6 +50,8 @@ class FakeTracker:
     def __init__(self):
         self.opened = self.closed = False
         self.ensure_calls = 0
+        self.check_calls = 0
+        self.check_outcomes = []
         self.queries, self.topics, self.answers = [], [], []
         self.downloads, self.download_outcomes = [], []
         self.download_wait = None
@@ -78,6 +81,10 @@ class FakeTracker:
         if isinstance(result, Exception):
             raise result
         return result
+
+    async def check_authenticated(self):
+        self.check_calls += 1
+        return self.outcome(self.check_outcomes, True)
 
     async def ensure_authenticated(self):
         self.ensure_calls += 1
@@ -183,7 +190,7 @@ class Harness:
         await self.flow.handle_callback(callback(self.button(text), **kwargs))
 
     async def search(self, query="ubuntu"):
-        await self.send("/start")
+        await self.send("/search")
         await self.send(query)
 
 
@@ -192,9 +199,9 @@ def h(tmp_path):
     return Harness(tmp_path)
 
 
-def test_start_authenticates_before_prompting_for_query(h):
+def test_search_authenticates_before_prompting_for_query(h):
     async def run():
-        await h.send("/start")
+        await h.send("/search")
         assert h.client.opened and h.client.ensure_calls == 1
         assert h.state.stage == "query"
         assert not h.client.queries
@@ -300,7 +307,7 @@ def test_captcha_image_answer_and_refreshed_challenge_are_scoped_and_redacted(h,
         second = CaptchaChallenge("second", 1, 10, b"image-2", "image/png", 1300)
         h.next_client.auth_outcomes = [first]
         h.next_client.captcha_outcomes = [second, None]
-        await h.send("/start")
+        await h.send("/search")
         assert h.state.stage == "captcha"
         assert h.bot.photos[-1]["photo"].data == b"image-1"
         await h.send("wrong-secret")
@@ -322,7 +329,7 @@ def test_expired_captcha_restarts_authentication(h):
             None,
         ]
         h.next_client.captcha_outcomes = [CaptchaExpired("Expired")]
-        await h.send("/start")
+        await h.send("/search")
         await h.send("answer")
         assert h.client.ensure_calls == 2
         assert h.state.stage == "query"
@@ -367,7 +374,7 @@ def test_network_retry_preserves_query(h):
 def test_invalid_credentials_return_to_login_without_search_or_retry(h):
     async def run():
         h.next_client.auth_outcomes = [InvalidCredentials("bad")]
-        await h.send("/start")
+        await h.send("/search")
         assert "retry" not in h.state.actions
         assert h.state.stage == "login"
         assert h.state.actions == ()
@@ -438,7 +445,7 @@ def test_cancel_interrupts_pending_authentication_and_closes_client(h):
     async def run():
         client = h.next_client
         client.wait = asyncio.Event()
-        task = asyncio.create_task(h.send("/start"))
+        task = asyncio.create_task(h.send("/search"))
         await asyncio.wait_for(client.entered.wait(), timeout=3)
         await h.send("query while busy")
         assert "operation is running" in h.bot.messages[-1]["text"]
@@ -478,7 +485,7 @@ def test_captcha_from_another_owner_is_never_delivered(h):
         h.next_client.auth_outcomes = [
             CaptchaChallenge("private", 2, 20, b"private", "image/png", 1300)
         ]
-        await h.send("/start")
+        await h.send("/search")
         assert not h.bot.photos
         assert h.state.stage == "error"
 
@@ -544,15 +551,15 @@ def test_callback_reserves_operation_before_acknowledgement_yields(h):
 
 def test_old_controls_and_unknown_actions_cannot_start_work(h):
     async def run():
-        await h.send("/start")
+        await h.send("/search")
         forged = f"sc:{h.state.token}:download"
         await h.flow.handle_callback(callback(forged))
         assert "expired" in h.bot.answers[-1]["text"]
         assert not h.client.topics and not h.client.queries
         await h.send("ubuntu")
         old = h.button("1")
-        await h.send("/start")
-        assert h.clients[0].closed
+        await h.send("/search")
+        assert not h.clients[0].closed
         await h.flow.handle_callback(callback(old))
         assert "expired" in h.bot.answers[-1]["text"]
 
@@ -667,7 +674,7 @@ def test_new_user_login_password_steps_and_restart_reuse(tmp_path):
     h = Harness(tmp_path, credentials=False)
 
     async def run():
-        await h.send("/start")
+        await h.send("/search")
         assert h.state.stage == "login" and not h.clients
         await h.send("new-user")
         assert h.state.stage == "password" and not h.clients
@@ -681,7 +688,7 @@ def test_new_user_login_password_steps_and_restart_reuse(tmp_path):
         h.flow = TelegramConversation(
             h.bot, h.store, frozenset({1, 2}), h.factory, workflow=h.workflow
         )
-        await h.send("/start")
+        await h.send("/search")
         assert h.state.stage == "query"
         assert h.client.credentials == pair
         assert h.store.get_credentials(2) is None
@@ -694,7 +701,7 @@ def test_bad_credentials_loop_until_valid_and_never_persist_candidates(tmp_path)
     h = Harness(tmp_path, credentials=False)
 
     async def run():
-        await h.send("/start")
+        await h.send("/search")
         for attempt in range(2):
             client = h.next_client
             client.auth_outcomes = [InvalidCredentials("rejected")]
@@ -720,7 +727,7 @@ def test_captcha_credentials_saved_only_after_success(tmp_path):
         h.next_client.auth_outcomes = [
             CaptchaChallenge("login", 1, 10, b"image", "image/png", 1300)
         ]
-        await h.send("/start")
+        await h.send("/search")
         await h.send("candidate-user")
         await h.send("candidate-password")
         assert h.state.stage == "captcha"
@@ -743,7 +750,7 @@ def test_rejected_captcha_login_returns_to_credentials(tmp_path):
             CaptchaChallenge("login", 1, 10, b"image", "image/png", 1300)
         ]
         h.next_client.captcha_outcomes = [InvalidCredentials("bad")]
-        await h.send("/start")
+        await h.send("/search")
         await h.send("bad-user")
         await h.send("bad-password")
         await h.send("answer")
@@ -760,14 +767,14 @@ def test_credentials_inputs_are_redacted_and_cancel_clears_pending(tmp_path, cap
 
     async def run():
         with caplog.at_level(logging.INFO):
-            await h.send("/start")
+            await h.send("/search")
             await h.send("private-login")
             await h.send("private-password")
         assert "private-login" not in caplog.text
         assert "private-password" not in caplog.text
         await h.flow.close()
         # A different allowed user must enter their own credentials.
-        await h.send("/start", user_id=2)
+        await h.send("/search", user_id=2)
         await h.send("pending-login", user_id=2)
         state = h.flow.sessions[(2, 10)]
         await h.send("/cancel", user_id=2)
@@ -779,7 +786,7 @@ def test_credentials_inputs_are_redacted_and_cancel_clears_pending(tmp_path, cap
 
 def test_failed_reauthentication_preserves_search_until_new_credentials(h):
     async def run():
-        await h.send("/start")
+        await h.send("/search")
         h.client.search_outcomes = [AuthenticationRequired("expired")]
         h.client.auth_outcomes = [InvalidCredentials("bad")]
         await h.send("saved query")
@@ -1004,5 +1011,231 @@ def test_expired_telegram_callback_is_quiet_and_never_starts_download(h, active,
             assert (
                 h.store.get_selection(h.state.selected.id, 1, 10).status == SelectionStatus.PENDING
             )
+
+    asyncio.run(run())
+
+
+def test_start_opens_menu_without_login_or_transmission_requests(h):
+    async def run():
+        await h.send("/start")
+        assert h.state.stage == "menu"
+        assert h.state.actions == ("login", "search", "downloads")
+        assert h.bot.messages[-1]["text"] == "Menu"
+        assert not h.clients and not h.rpc.adds and not h.rpc.lookups
+        await h.click("search")
+        assert h.state.stage == "query" and h.client.ensure_calls == 1
+        await h.send("  exact query  ")
+        assert h.client.queries == ["  exact query  "]
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_menu_login_branch_returns_to_menu_and_hides_login(tmp_path):
+    h = Harness(tmp_path, credentials=False)
+
+    async def run():
+        await h.send("/start")
+        await h.click("log in")
+        assert h.state.stage == "login"
+        await h.send("new-login")
+        await h.send("new-password")
+        assert h.state.stage == "menu" and h.state.authenticated
+        assert h.state.actions == ("search", "downloads")
+        assert h.store.get_credentials(1) == RuTrackerCredentials("new-login", "new-password")
+        assert h.client.check_calls == 1
+        await h.send("/start")
+        assert not h.client.closed and h.client.check_calls == 2
+        assert "login" not in h.state.actions
+        await h.click("search")
+        assert h.state.stage == "query"
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_menu_login_captcha_and_invalid_credentials_resume_menu(h):
+    async def run():
+        h.next_client.auth_outcomes = [InvalidCredentials("bad")]
+        await h.send("/start")
+        await h.click("log in")
+        assert h.state.stage == "login"
+        h.next_client.auth_outcomes = [CaptchaChallenge("login", 1, 10, b"img", "image/png", 1300)]
+        await h.send("replacement-user")
+        await h.send("replacement-password")
+        assert h.state.stage == "captcha"
+        await h.send("answer")
+        assert h.state.stage == "menu" and "login" not in h.state.actions
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", [False, NetworkError("offline")])
+def test_menu_checks_expired_or_unavailable_rutracker_session(h, outcome):
+    async def run():
+        await h.search()
+        old = h.button("1")
+        client = h.client
+        client.check_outcomes = [outcome]
+        await h.send("/start")
+        assert h.state.stage == "menu" and "login" in h.state.actions
+        assert client.closed and not h.state.authenticated
+        await h.flow.handle_callback(callback(old))
+        assert "expired" in h.bot.answers[-1]["text"]
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("state", ["populated", "empty", "offline"])
+def test_downloads_branch_works_without_rutracker_login_and_returns_to_menu(h, state):
+    from tg_torrent_downloader.transmission import ActiveDownload, TransmissionUnavailable
+
+    async def run():
+        h.rpc.active = (
+            (ActiveDownload(7, "Ubuntu <literal>", 4, 0.25, 2048, 120),)
+            if state == "populated"
+            else ()
+        )
+        if state == "offline":
+            h.rpc.active_error = TransmissionUnavailable("offline")
+        await h.send("/start")
+        await h.click("downloads")
+        assert h.state.stage == "downloads" and h.state.actions == (
+            "reload",
+            "menu",
+        )
+        text = h.bot.messages[-1]["text"]
+        if state == "populated":
+            assert "Ubuntu <literal> G" in text and "25.0%" in text and "2.0 KiB/s" in text
+            assert "(ID " not in text
+            entity = h.bot.messages[-1]["entities"][0]
+            assert parse_qs(urlsplit(entity.url).query) == {"q": ["Ubuntu <literal>"]}
+            encoded = text.encode("utf-16-le")
+            assert (
+                encoded[entity.offset * 2 : (entity.offset + entity.length) * 2].decode("utf-16-le")
+                == "G"
+            )
+        elif state == "empty":
+            assert "No active downloads" in text
+        else:
+            assert "Could not load" in text
+        assert h.rpc.closed and not h.rpc.adds and not h.rpc.lookups and not h.clients
+        await h.click("menu")
+        assert h.state.stage == "menu" and "login" in h.state.actions
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_downloads_return_preserves_authenticated_session_and_invalidates_old_menu(h):
+    async def run():
+        await h.send("/start")
+        old_login = h.button("log in")
+        await h.click("log in")
+        client = h.client
+        await h.click("downloads")
+        await h.click("menu")
+        assert h.state.actions == ("search", "downloads") and not client.closed
+        await h.flow.handle_callback(callback(old_login))
+        assert "expired" in h.bot.answers[-1]["text"]
+        assert client.ensure_calls == 1
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_another_user_cannot_read_downloads_with_foreign_menu(h):
+    async def run():
+        await h.send("/start")
+        await h.flow.handle_callback(callback(h.button("downloads"), user_id=2))
+        assert "expired" in h.bot.answers[-1]["text"]
+        assert h.rpc.active_calls == 0
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_downloads_long_list_retains_menu_on_final_chunk(h):
+    from tg_torrent_downloader.transmission import ActiveDownload
+
+    async def run():
+        h.rpc.active = tuple(
+            ActiveDownload(i, "long name 🙂" * 70, 3, 0.1, 0, -1) for i in range(12)
+        )
+        await h.send("/start")
+        before = len(h.bot.messages)
+        await h.click("downloads")
+        chunks = h.bot.messages[before + 1 :]
+        assert len(chunks) > 1
+        assert all(item["reply_markup"] is None for item in chunks[:-1])
+        assert chunks[-1]["reply_markup"] is not None
+        links = 0
+        for chunk in chunks:
+            encoded = chunk["text"].encode("utf-16-le")
+            for entity in chunk.get("entities") or []:
+                assert (
+                    encoded[entity.offset * 2 : (entity.offset + entity.length) * 2].decode(
+                        "utf-16-le"
+                    )
+                    == "G"
+                )
+                assert parse_qs(urlsplit(entity.url).query)["q"] == ["long name 🙂" * 70]
+                links += 1
+        assert links == 12
+        await h.click("menu")
+        assert h.state.stage == "menu"
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_start_abandons_pending_selection_and_expired_selection_does_not_block_menu(h, expired):
+    async def run():
+        await h.search()
+        await h.click("1")
+        selected, client = h.state.selected, h.client
+        if expired:
+            h.now[0] += 901
+            h.state.touched_at = h.now[0]  # UI is active, but its search snapshot has expired.
+        await h.send("/start")
+        assert h.state.stage == "menu" and h.state.selected is None
+        assert not h.rpc.adds and not client.closed
+        if not expired:
+            assert h.store.get_selection(selected.id, 1, 10).status == SelectionStatus.CANCELLED
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("initial", ["empty", "offline", "populated"])
+def test_reload_fetches_fresh_torrents_and_shows_seeding(h, initial):
+    from tg_torrent_downloader.transmission import ActiveDownload, TransmissionUnavailable
+
+    async def run():
+        if initial == "offline":
+            h.rpc.active_error = TransmissionUnavailable("offline")
+        elif initial == "populated":
+            h.rpc.active = (ActiveDownload(1, "old name", 4, 0.5, 10, -1),)
+        await h.send("/start")
+        await h.click("downloads")
+        old_reload = h.button("reload")
+        h.rpc.active_error = None
+        h.rpc.active = (ActiveDownload(9, "Now seeding", 6, 1.0, 0, -1, 4096),)
+        await h.click("reload")
+        assert h.rpc.active_calls == 2
+        assert "Now seeding" in h.bot.messages[-1]["text"]
+        assert "Seeding" in h.bot.messages[-1]["text"]
+        assert "100.0%" in h.bot.messages[-1]["text"]
+        assert "↑ 4.0 KiB/s" in h.bot.messages[-1]["text"]
+        assert h.state.actions == ("reload", "menu")
+        await h.flow.handle_callback(callback(old_reload))
+        assert "expired" in h.bot.answers[-1]["text"]
+        assert h.rpc.active_calls == 2 and not h.rpc.adds
+        await h.click("menu")
+        assert h.state.stage == "menu"
+        await h.flow.close()
 
     asyncio.run(run())
