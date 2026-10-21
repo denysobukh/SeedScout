@@ -24,7 +24,7 @@ Validation: meaningful tests for ownership, expiry, concurrent confirmation, and
 
 ## 3. RuTracker integration
 
-Follow RUTRACKER_FLOW.md. Inspect actual response formats and implement Playwright/visible-Chrome session acquisition, verified login form, cookie/User-Agent transfer and reuse, session checks, login, user/chat-scoped CAPTCHA challenges and answers, the first 10 search results in source order, full topic descriptions, and separate torrent file retrieval. Handle character encoding, expired sessions, no results, unavailable topics, timeouts, and unexpected HTML. Keep source URLs constrained to RuTracker. Download torrent bytes only through a separately invoked method after confirmation.
+Follow RUTRACKER_FLOW.md. Inspect actual response formats and implement Playwright/visible-Chrome session acquisition, verified login form, cookie/User-Agent transfer and reuse, session checks, login, user/chat-scoped CAPTCHA challenges and answers, server-side seed sorting and local descending seed ranking before limiting to ten distinct search results, full topic descriptions, and separate torrent file retrieval. Handle character encoding, expired sessions, no results, unavailable topics, timeouts, and unexpected HTML. Keep source URLs constrained to RuTracker. Download torrent bytes only through a separately invoked method after confirmation.
 
 Validation: sanitized HTML fixtures and mocked HTTP tests for parsing, authentication, CAPTCHA renewal/expiry/ownership, top-10 ordering, full descriptions, and failures. Live read-only checks only when credentials and access are available; document any unverified assumptions.
 

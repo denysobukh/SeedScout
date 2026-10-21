@@ -196,3 +196,19 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Review checkpoint: implementation, docs, tests, and the earlier CAPTCHA CDN fix are uncommitted. Next action: user verifies Telegram behavior and requests any changes or commit.
 
 - User approved committing the SQLite credential flow and accompanying CAPTCHA CDN fix. Validation remains 213 passing tests with lint, formatting, and whitespace checks passed. Next planned implementation step is Transmission integration (step 5), pending user instruction.
+
+## Search result URL removal
+
+- User requested removing RuTracker topic links from search results. Removed the URL line from each result; numbered titles, size, seed count, and selection controls remain. Updated specification and flow. Changes await review and commit.
+- Validation: all 47 conversation tests passed; Ruff formatting, lint, and whitespace checks passed. The prior bot process was no longer running; starting the updated app for the ongoing Telegram test.
+
+## Seed-ranked search results
+
+- User requested sorting by seed count descending before applying the top-ten limit, and checking RuTracker's server-side sort controls.
+- Verified the authenticated live search form: select `o` option `10` is "Количество сидов"; radio `s=1` is ascending and `s=2` is descending. A read-only Ubuntu search with `o=10&s=2` returned 50 seed counts in descending order. No torrent was downloaded or submitted.
+- Search requests now include `o=10&s=2` while preserving the original query and Windows-1251 encoding. The parser collects all distinct topics from the returned page, stably sorts by seeds descending, then takes ten. Unknown counts follow zero; equal counts retain source order. Pagination remains deferred.
+- Added regressions for highly seeded rows beyond the former early limit, deduplication, stable ties, missing/invalid counts, and exact request parameters. Sort parameters remain visible in sanitized diagnostics. Updated specification, flow, implementation plan, and README.
+- Validation: all 120 targeted RuTracker, conversation, and logging tests passed; Ruff lint/format and whitespace checks passed. Live form and server ordering verification succeeded after browser-session authentication.
+- The previous bot process was no longer running; starting the updated app for the ongoing Telegram test. This change and the preceding result-link removal remain uncommitted for user review.
+
+- User approved committing seed-ranked search results and the preceding result-link removal. Included implementation, regression tests, and documentation; validation remains 120 targeted tests passed with lint, formatting, and whitespace checks passed. Next planned step: Transmission integration (step 5), pending user instruction.

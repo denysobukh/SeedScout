@@ -562,8 +562,7 @@ class TelegramConversation:
             if result.seeds is not None:
                 metadata.append(f"Seeds: {result.seeds}")
             lines.append(
-                f"{index}. {result.title}\n{result.topic_url}"
-                + ("\n" + " · ".join(metadata) if metadata else "")
+                f"{index}. {result.title}" + ("\n" + " · ".join(metadata) if metadata else "")
             )
         await self._screen(
             c,

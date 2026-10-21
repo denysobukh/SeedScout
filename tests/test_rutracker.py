@@ -65,15 +65,17 @@ def test_search_metadata_order_and_missing_fields():
     assert results[1].quality is None
 
 
-def test_search_limits_to_first_ten_distinct_topics_in_returned_order():
+def test_search_sorts_all_distinct_topics_by_seeds_before_top_ten():
     rows = "".join(
-        f'<tr><td><a class="tLink" href="viewtopic.php?t={i}">{i}</a></td></tr>'
+        f'<tr><td><a class="tLink" href="viewtopic.php?t={i}">{i}</a></td>'
+        f'<td class="seedmed">{i}</td></tr>'
         for i in [13, 13, *range(1, 13)]
     )
     result = parse_search(
         _Response(f'<table id="tor-tbl">{rows}</table>'.encode(), "text/html", "utf-8")
     )
-    assert [r.topic_id for r in result] == [13, *range(1, 10)]
+    assert [r.topic_id for r in result] == list(range(13, 3, -1))
+    assert [r.seeds for r in result] == list(range(13, 3, -1))
 
 
 def test_empty_results_are_distinguished_from_changed_markup():
@@ -258,7 +260,8 @@ def test_search_uses_query_unchanged_and_never_downloads_a_torrent():
         client = ScriptedClient([page("search"), page("topic")])
         results = await client.search("  Тест & 2020  ")
         url = client.requests[0][1]
-        assert parse_qs(urlsplit(url).query, encoding="cp1251")["nm"] == ["  Тест & 2020  "]
+        params = parse_qs(urlsplit(url).query, encoding="cp1251")
+        assert params == {"nm": ["  Тест & 2020  "], "o": ["10"], "s": ["2"]}
         details = await client.get_topic(results[0])
         assert details.result == results[0]
         assert "t=21" in client.requests[-1][1]
@@ -737,3 +740,16 @@ def test_cdn_transport_uses_cookie_free_session_and_no_post_data(monkeypatch):
             )
 
     asyncio.run(run())
+
+
+def test_seed_sort_preserves_ties_and_places_unknown_counts_after_zero():
+    rows = "".join(
+        f'<tr><td><a class="tLink" href="viewtopic.php?t={topic}">{topic}</a></td>'
+        f'<td class="seedmed">{seeds}</td></tr>'
+        for topic, seeds in [(1, "5"), (2, ""), (3, "0"), (4, "5"), (5, "7"), (6, "n/a")]
+    )
+    results = parse_search(
+        _Response(f'<table id="tor-tbl">{rows}</table>'.encode(), "text/html", "utf-8")
+    )
+    assert [result.topic_id for result in results] == [5, 1, 4, 3, 2, 6]
+    assert [result.seeds for result in results] == [7, 5, 5, 0, None, None]

@@ -7,7 +7,7 @@ Build a Telegram bot that finds torrents on rutracker.org for content requested 
 ## Core workflow
 
 1. The bot checks its RuTracker session, authenticates if necessary, and asks the requesting user to solve any CAPTCHA before prompting for a query.
-2. The bot uses the user's query unchanged to search rutracker.org and shows the first 10 results in returned order, numbered 1–10 (or fewer when fewer matches exist).
+2. The bot uses the user's query unchanged to search rutracker.org and requests descending seed-count order, sorts all distinct returned topics by seed count descending before applying the top-10 limit, and shows those results, numbered 1–10 (or fewer when fewer matches exist).
 3. Each result includes its title, a link to the RuTracker topic, and available metadata useful for choosing a release, such as size, seed count, quality, language, and format. Missing metadata is omitted rather than invented.
 4. The user picks a numbered result button (or types a valid displayed result number). The bot opens its stored topic link and displays the full release description, split across Telegram messages as needed, with Download and Back actions. Download is explicit confirmation; Back restores the original results and numbering.
 5. Only after confirmation, the bot downloads the selected topic's `.torrent` file from rutracker.org.
@@ -22,6 +22,8 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 
 - Provide `/start` and `/help` commands explaining how to search and add a torrent.
 - Accept nonempty text queries and provide clear feedback for empty or unsupported input.
+- Request server-side seed sorting (`o=10&s=2`) and sort parsed results locally before taking ten. Keep source order for equal seed counts and put unknown counts after zero. Pagination remains deferred; local ranking covers the returned search page.
+- Omit RuTracker topic URLs from the search result list; show numbered titles, size, and seed count when available.
 - Show one numbered button per displayed result (1–10, or fewer), replacing New search and Cancel buttons on the results list. Arrange up to five numeric buttons per row.
 - Accept a numbered button or a typed valid displayed result number as selection input. Any other nonempty text on the results or description screen starts a new search using the original text unchanged, including out-of-range numbers. Recognized commands and CAPTCHA answers retain their dedicated behavior.
 - Provide Download and Back buttons on the description; /search and /cancel remain available. Initial results are limited to the top 10; pagination is deferred.

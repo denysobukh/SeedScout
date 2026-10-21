@@ -32,7 +32,7 @@ _SAFE_HEADERS = {
     "cf-cache-status",
     "content-encoding",
 }
-_SAFE_FIELDS = {"nm", "t", "start", "login", "redirect"}
+_SAFE_FIELDS = {"nm", "t", "start", "login", "redirect", "o", "s"}
 _SAFE_PATHS = {
     "/",
     "/forum/",

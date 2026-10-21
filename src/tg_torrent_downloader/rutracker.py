@@ -300,11 +300,10 @@ def parse_search(response: _Response) -> tuple[TorrentResult, ...]:
             )
         )
         seen.add(topic_id)
-        if len(results) == 10:
-            break
     if not results:
         raise UnrecognizedSearchResults("RuTracker search table contains no recognizable releases")
-    return tuple(results)
+    results.sort(key=lambda result: result.seeds if result.seeds is not None else -1, reverse=True)
+    return tuple(results[:10])
 
 
 def _display_url(value: str, base: str) -> str | None:
@@ -767,7 +766,9 @@ class RuTrackerClient:
             raise ValueError("Search query must not be empty")
         # RuTracker's legacy search field is Windows-1251; never rewrite the query.
         try:
-            params = urlencode({"nm": query}, encoding="windows-1251", errors="strict")
+            params = urlencode(
+                {"nm": query, "o": "10", "s": "2"}, encoding="windows-1251", errors="strict"
+            )
         except UnicodeError:
             raise ValueError("RuTracker search does not support some query characters") from None
         async with self._operation("searching"):

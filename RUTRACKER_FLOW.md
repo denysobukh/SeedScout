@@ -31,13 +31,14 @@ The user approved this flow. Download is the explicit confirmation; no extra con
    - Prompt for a query and use the submitted text unchanged as the search value.
    - Nonempty input → 5. Empty input → remain at 4. Cancel → stop.
 5. **Search RuTracker**
+   - Send the unchanged query with `o=10&s=2` for descending seed count. Parse all distinct topics in the returned page, sort by seeds descending, then take ten; ties retain source order and unknown seed counts come last.
    - Matches → 6. No matches → explain and return to 4.
    - Search table has no recognizable releases → show the diagnostic message without buttons and return to 4. Every nonempty text input, including numbers, is then a new query unchanged; /start, /search, /help, and /cancel remain commands.
    - Session expired → 2–3, then retry 5 with the saved query.
    - Network error → Retry → 5, New search → 4, or Cancel → stop.
 6. **Display first 10 results**
-   - Preserve source order; number results 1–10, or fewer when fewer exist.
-   - Include title, size, and seed count when available.
+   - Show the seed-ranked top ten; number results 1–10, or fewer when fewer exist.
+   - Include title, size, and seed count when available; omit topic URLs from the results list.
    - Show only numbered result buttons, one for each displayed torrent, in rows of up to five; do not show New search or Cancel buttons on this screen.
    - A numbered button or typed valid displayed result number → 7.
    - Any other nonempty text, including an out-of-range number → 5 with that text as the new query unchanged.
