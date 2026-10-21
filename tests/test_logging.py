@@ -168,3 +168,22 @@ def test_sensitive_tokens_in_nonstandard_url_paths_and_redirect_forms_are_redact
 
     assert "path-secret" not in safe_url("https://rutracker.org/captcha/path-secret.png")
     assert "password" not in str(safe_fields([("redirect", "//user:password@host/path")]))
+
+
+def test_credentials_registered_after_startup_are_redacted():
+    from io import StringIO
+
+    from tg_torrent_downloader.logging import register_secrets
+
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(RedactingFormatter(()))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        register_secrets("new-private/password")
+        root.warning("credential %s", quote("new-private/password", safe=""))
+        assert "new-private" not in output.getvalue()
+        assert "[REDACTED]" in output.getvalue()
+    finally:
+        root.removeHandler(handler)

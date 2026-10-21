@@ -10,8 +10,8 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 - Repository: main; initial planning commit 9f31c21; step 1 commit 7a456bf; step 2 commit 223716a.
 - Planning: specification, implementation plan, and progress file approved by the user.
 - Implementation: step 4 committed as f77a3dd. User approved the numbered result button and button-free search-error updates for this commit.
-- Next action: step 5 (Transmission integration) has not started. Continue the user-requested local Telegram test as needed; do not implement or commit the next step without its review workflow.
-- Live verification: browser clearance transfer, credential login, session recheck, search, and full topic extraction passed. User reported the corrected Telegram flow working. CAPTCHA still needs live verification. Live Transmission submissions require explicit test authorization.
+- Next action: user review and live CAPTCHA test for the CDN fix; do not commit without approval. Step 5 (Transmission integration) has not started. The local test bot uses a temporary wrong username; saved credentials are unchanged.
+- Live verification: browser clearance transfer, credential login, session recheck, search, and full topic extraction passed. User reported the corrected Telegram flow working. CAPTCHA image acquisition now passes live verification; answer submission and the full Telegram CAPTCHA round trip remain to be tested. Live Transmission submissions require explicit test authorization.
 
 ## Step tracker
 
@@ -168,3 +168,31 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Updated specification, decision tree, and README. Added parser and conversation regressions for button-free recovery and text/numeric queries. User approved committing this update together with the numbered result buttons.
 
 - Final validation for button-free search-error recovery: all 197 tests passed; Ruff lint/format and whitespace checks passed. Started the updated local bot for the ongoing Telegram test. Send /start for fresh controls. Included in the user-approved search interaction commit.
+
+## Live CAPTCHA CDN failure and fix
+
+- User requested a temporary incorrect RuTracker username to trigger CAPTCHA. The override is process-local; saved .env credentials remain unchanged.
+- Their screenshot showed "unsupported source URL" after failed login. Live inspection found that the rendered login form uses https://static.rutracker.cc/captcha/ image URLs, which the primary rutracker.org-only URL validator rejected.
+- Added a dedicated CAPTCHA URL policy for the exact observed CDN/path and the legacy /forum/captcha.php endpoint. Normal login/search/topic/torrent URLs remain constrained to rutracker.org.
+- CDN images use an isolated DummyCookieJar session and no forwarded headers or POST data; scoped redirects, timeout/size limits, MIME validation, and sanitized diagnostics remain in effect. No credentials or cookies are sent to the CDN.
+- Updated the specification, flow, README, and fixture notes. Added a synthetic CDN CAPTCHA fixture and tests for challenge delivery, disallowed hosts/paths/protocols, cookie-free transport, and rejection of CDN login/torrent requests.
+- Live verification retrieved an image/jpeg CAPTCHA (4108 bytes) using the temporary incorrect username. No answer was attempted, no raw token or image was printed/saved, and no torrent was retrieved.
+- Targeted tests: 102 passed. Final full-suite validation and local test restart are recorded below. Changes are uncommitted, awaiting user review.
+
+- Final CAPTCHA CDN fix validation: all 208 tests passed; Ruff lint/format and whitespace checks passed. Restarted the local bot with the temporary wrong username for the user to verify CAPTCHA delivery. Saved .env credentials are unchanged. Fix and docs remain uncommitted.
+
+
+## SQLite RuTracker credentials and interactive login
+
+- User requested removing RuTracker login/password from environment configuration, separate login/password prompts, and repeated credential entry after failed authentication, with no New search button on the failure screen.
+- Added schema version 2 with per-Telegram-user credential storage; migration preserves searches and selections. The database is created and reopened with owner-only permissions. Credentials are excluded from object representations and diagnostic inputs, with runtime formatter redaction for newly entered or loaded values.
+- Missing credentials prompt for login and then password in private chat. Invalid credentials remove only that rejected saved pair and return to login with Cancel only. Candidates remain in memory until authentication succeeds, including CAPTCHA completion. Cancellation/expiry clears pending values; authenticated pairs persist across restarts.
+- Search/topic resumption survives credential replacement. Removed RuTracker fields from Settings and .env.example; legacy environment variables are ignored. Updated specification, flow, and README. Earlier uncommitted CAPTCHA CDN fix remains included.
+- Validation and local credential migration status follow below. Changes remain uncommitted pending user review.
+
+- Validation: all 213 regression tests passed; Ruff lint and formatting checks, git whitespace checks, and offline configuration validation passed. Tests cover credential retry loops, deferred saving through CAPTCHA, rejected-pair cleanup, per-user isolation, restart reuse, secret redaction, schema migration, and resuming an interrupted search.
+- Migrated the existing local credential pair previously verified by the earlier live login test into SQLite for the sole allowed Telegram user, then removed both RuTracker keys from local .env. Verified database permissions 0600 and that .env/database remain ignored. Future credential pairs are saved only by successful authentication in the conversation.
+- Restarted the updated local bot for the ongoing Telegram test. It received /start and entered browser verification using SQLite credentials. Full live testing of the new credential-entry loop remains for user review. Runtime process uses no temporary incorrect-username override. No torrent download or Transmission submission was performed.
+- Review checkpoint: implementation, docs, tests, and the earlier CAPTCHA CDN fix are uncommitted. Next action: user verifies Telegram behavior and requests any changes or commit.
+
+- User approved committing the SQLite credential flow and accompanying CAPTCHA CDN fix. Validation remains 213 passing tests with lint, formatting, and whitespace checks passed. Next planned implementation step is Transmission integration (step 5), pending user instruction.

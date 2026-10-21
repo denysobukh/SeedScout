@@ -65,3 +65,13 @@ class Selection:
     info_hash: str | None
     transmission_id: int | None
     transmission_name: str | None
+
+
+@dataclass(frozen=True, repr=False)
+class RuTrackerCredentials:
+    username: str
+    password: str
+
+    def __post_init__(self) -> None:
+        if not self.username.strip() or not self.password.strip():
+            raise ValueError("Login and password must be nonempty")

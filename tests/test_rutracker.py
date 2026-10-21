@@ -18,6 +18,7 @@ from tg_torrent_downloader.rutracker import (
     TopicUnavailable,
     UnexpectedPage,
     UnrecognizedSearchResults,
+    _captcha_source_url,
     _Response,
     _source_url,
     parse_search,
@@ -658,3 +659,81 @@ def test_unrecognizable_search_table_has_specific_recoverable_error():
                 "utf-8",
             )
         )
+
+
+def test_real_captcha_cdn_url_is_accepted_and_delivered_as_challenge():
+    async def run():
+        client = ScriptedClient([page("captcha-cdn"), IMAGE])
+        challenge = await client.ensure_authenticated()
+        assert challenge.image == IMAGE.body
+        assert client.requests[-1][1] == "https://static.rutracker.cc/captcha/synthetic-image.jpg"
+        assert client.requests[-1][2]["captcha_image"] is True
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://static.rutracker.cc/private/secret.jpg",
+        "https://evil.example/captcha/image.jpg",
+        "http://static.rutracker.cc/captcha/image.jpg",
+        "https://static.rutracker.cc:444/captcha/i.jpg",
+        "https://user:secret@static.rutracker.cc/captcha/i.jpg",
+        "https://rutracker.org/forum/login.php",
+        "https://static.rutracker.cc/captcha/../private.jpg",
+        "https://static.rutracker.cc/captcha/%2e%2e/private.jpg",
+    ],
+)
+def test_captcha_hosts_and_paths_remain_constrained(url):
+    with pytest.raises(UnexpectedPage):
+        _captcha_source_url(url)
+
+
+def test_captcha_cdn_is_not_a_login_or_torrent_source():
+    with pytest.raises(UnexpectedPage):
+        _source_url("https://static.rutracker.cc/captcha/image.jpg")
+
+
+def test_cdn_transport_uses_cookie_free_session_and_no_post_data(monkeypatch):
+    async def run():
+        client, primary = client_with_transport([])
+        primary.headers = {"User-Agent": "Chrome/Test"}
+        images = FakeSession([FakeResponse(body=b"image")])
+        images.responses[0].content_type = "image/jpeg"
+        opened = []
+
+        class ImageContext:
+            async def __aenter__(self):
+                return images
+
+            async def __aexit__(self, *args):
+                await images.close()
+
+        def open_images(**kwargs):
+            opened.append(kwargs)
+            return ImageContext()
+
+        monkeypatch.setattr(client, "_new_http_session", open_images)
+        response = await client._request(
+            "GET",
+            "https://static.rutracker.cc/captcha/image.jpg",
+            captcha_image=True,
+            headers={"Cookie": "primary-secret", "Authorization": "Bearer primary-secret"},
+        )
+        assert response.body == b"image"
+        assert isinstance(opened[0]["jar"], aiohttp.DummyCookieJar)
+        assert opened[0]["user_agent"] == "Chrome/Test"
+        assert not primary.requests
+        assert images.requests[0][2]["data"] is None
+        assert images.requests[0][2]["headers"] is None
+        assert images.closed
+        with pytest.raises(UnexpectedPage):
+            await client._request(
+                "POST",
+                "https://static.rutracker.cc/captcha/image.jpg",
+                data=b"private",
+                captcha_image=True,
+            )
+
+    asyncio.run(run())

@@ -6,6 +6,7 @@ Only claim_confirmation authorizes torrent retrieval. begin_submission must comm
 
 import json
 import math
+import os
 import re
 import sqlite3
 import time
@@ -16,7 +17,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from tg_torrent_downloader.logging import log_state
-from tg_torrent_downloader.models import Search, Selection, SelectionStatus, TorrentResult
+from tg_torrent_downloader.models import (
+    RuTrackerCredentials,
+    Search,
+    Selection,
+    SelectionStatus,
+    TorrentResult,
+)
 
 
 class StateError(ValueError):
@@ -83,14 +90,53 @@ class WorkflowStore:
     def initialize(self) -> None:
         """Create schema once; never silently downgrade a newer database."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Create privately before SQLite can write credentials; tighten existing files too.
+        descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
         with self._transaction() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 for statement in _SCHEMA:
                     db.execute(statement)
-                db.execute("PRAGMA user_version = 1")
-            elif version != 1:
+                version = 1
+            if version == 1:
+                db.execute("""CREATE TABLE rutracker_credentials (
+                    user_id INTEGER PRIMARY KEY, username TEXT NOT NULL,
+                    password TEXT NOT NULL, validated_at REAL NOT NULL
+                )""")
+                db.execute("PRAGMA user_version = 2")
+            elif version != 2:
                 raise StateError("Unsupported workflow database schema version")
+
+    def get_credentials(self, user_id: int) -> RuTrackerCredentials | None:
+        with self._transaction() as db:
+            row = db.execute(
+                "SELECT username, password FROM rutracker_credentials WHERE user_id=?", (user_id,)
+            ).fetchone()
+            return RuTrackerCredentials(**dict(row)) if row else None
+
+    def save_credentials(self, user_id: int, credentials: RuTrackerCredentials) -> None:
+        """Persist a pair only after the caller has confirmed authentication."""
+        if type(user_id) is not int or not 0 < user_id < 2**52:
+            raise ValueError("user_id must be a positive Telegram ID")
+        with self._transaction() as db:
+            db.execute(
+                """INSERT INTO rutracker_credentials VALUES (?,?,?,?)
+                ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,
+                password=excluded.password, validated_at=excluded.validated_at""",
+                (user_id, credentials.username, credentials.password, self.clock()),
+            )
+
+    def forget_credentials(self, user_id: int, credentials: RuTrackerCredentials) -> None:
+        """Remove a rejected pair without deleting newer credentials from another chat."""
+        with self._transaction() as db:
+            db.execute(
+                "DELETE FROM rutracker_credentials WHERE user_id=? AND username=? AND password=?",
+                (user_id, credentials.username, credentials.password),
+            )
 
     @staticmethod
     def _owned(row: sqlite3.Row | None, user_id: int, chat_id: int) -> sqlite3.Row:

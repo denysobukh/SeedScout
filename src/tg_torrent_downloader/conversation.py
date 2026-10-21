@@ -18,8 +18,13 @@ from aiogram.types import (
     Message,
 )
 
-from tg_torrent_downloader.logging import diagnostic_event, log_state, log_user_input
-from tg_torrent_downloader.models import Search, Selection, SelectionStatus
+from tg_torrent_downloader.logging import (
+    diagnostic_event,
+    log_state,
+    log_user_input,
+    register_secrets,
+)
+from tg_torrent_downloader.models import RuTrackerCredentials, Search, Selection, SelectionStatus
 from tg_torrent_downloader.rutracker import (
     AuthenticationRequired,
     CaptchaChallenge,
@@ -36,7 +41,8 @@ from tg_torrent_downloader.storage import Expired, StateError, WorkflowStore
 _HELP = (
     "Seed Scout\n/start — connect to RuTracker and begin a search\n"
     "/search — new search\n/cancel — cancel the current operation\n/help — this guide\n\n"
-    "Solve any login CAPTCHA, send your query, then choose a numbered button or type its number. "
+    "Enter your RuTracker login and password when prompted, then solve any login CAPTCHA. "
+    "Send your query, then choose a numbered button or type its number. "
     "Send other text to search again. "
     "Back restores the same list. Downloads will be enabled in a later step."
 )
@@ -75,6 +81,9 @@ class Conversation:
     stage: str = "idle"
     token: str = field(default_factory=lambda: uuid4().hex)
     actions: tuple[str, ...] = ()
+    credentials: RuTrackerCredentials | None = None
+    pending_username: str | None = None
+    credentials_unverified: bool = False
     client: RuTrackerClient | None = None
     challenge: CaptchaChallenge | None = None
     query: str = ""
@@ -90,7 +99,7 @@ class TelegramConversation:
         bot: Bot,
         store: WorkflowStore,
         allowed_users: frozenset[int],
-        client_factory: Callable[[int, int], RuTrackerClient],
+        client_factory: Callable[[int, int, str, str], RuTrackerClient],
         *,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -172,6 +181,9 @@ class TelegramConversation:
                 pass
         if conversation.client:
             await conversation.client.close()
+        conversation.credentials = None
+        conversation.pending_username = None
+        conversation.challenge = None
         key = (conversation.user_id, conversation.chat_id)
         if self.sessions.get(key) is conversation:
             self.sessions.pop(key, None)
@@ -189,7 +201,14 @@ class TelegramConversation:
 
     async def _client(self, conversation: Conversation) -> RuTrackerClient:
         if conversation.client is None:
-            conversation.client = self.client_factory(conversation.user_id, conversation.chat_id)
+            if conversation.credentials is None:
+                raise StateError("RuTracker credentials are unavailable")
+            conversation.client = self.client_factory(
+                conversation.user_id,
+                conversation.chat_id,
+                conversation.credentials.username,
+                conversation.credentials.password,
+            )
             await conversation.client.__aenter__()
         return conversation.client
 
@@ -199,6 +218,9 @@ class TelegramConversation:
         user_id, chat_id = message.from_user.id, message.chat.id
         if user_id not in self.allowed_users:
             await self._text(chat_id, "This bot is restricted to allowed users.")
+            return
+        if message.chat.type != "private":
+            await self._text(chat_id, "Use a private chat with this bot to sign in and search.")
             return
         conversation = self.sessions.get((user_id, chat_id))
         text = message.text
@@ -213,7 +235,7 @@ class TelegramConversation:
             text if text is not None else "[non-text input]",
             sensitive=bool(
                 conversation
-                and conversation.stage == "captcha"
+                and conversation.stage in {"login", "password", "captcha"}
                 and command not in {"/start", "/search", "/cancel", "/help"}
             ),
         )
@@ -253,10 +275,21 @@ class TelegramConversation:
         if command in {"/start", "/search"}:
             c.query, c.search, c.selected = "", None, None
             await self._authenticate(c, "query")
-        elif command:
+        elif command and c.stage not in {"login", "password"}:
             await self._text(c.chat_id, "Unknown command. Use /help for available commands.")
         elif text is None or not text.strip():
             await self._text(c.chat_id, "Send a nonempty text message.")
+        elif c.stage == "login":
+            c.pending_username = text
+            register_secrets(text)
+            self._stage(c, "password")
+            await self._screen(c, "Enter your RuTracker password, or /cancel.", ("cancel",))
+        elif c.stage == "password":
+            register_secrets(text)
+            c.credentials = RuTrackerCredentials(c.pending_username, text)
+            c.pending_username = None
+            c.credentials_unverified = True
+            await self._authenticate(c, c.resume)
         elif c.stage == "captcha":
             client = await self._client(c)
             try:
@@ -411,11 +444,9 @@ class TelegramConversation:
                     ("new", "cancel"),
                 )
             elif isinstance(error, InvalidCredentials):
-                await self._screen(
-                    c,
-                    "RuTracker login failed. Check the configured credentials.",
-                    ("new", "cancel"),
-                )
+                if c.credentials:
+                    await asyncio.to_thread(self.store.forget_credentials, c.user_id, c.credentials)
+                await self._prompt_login(c, failed=True)
             else:
                 await self._screen(c, str(error), ("retry", "new", "cancel"))
         except (TelegramAPIError, sqlite3.Error) as error:
@@ -436,6 +467,12 @@ class TelegramConversation:
 
     async def _authenticate(self, c: Conversation, resume: str) -> None:
         c.resume = resume
+        if c.credentials is None:
+            c.credentials = await asyncio.to_thread(self.store.get_credentials, c.user_id)
+        if c.credentials is None:
+            await self._prompt_login(c)
+            return
+        register_secrets(c.credentials.username, c.credentials.password)
         self._stage(c, "authenticating")
         await self._screen(
             c,
@@ -448,6 +485,18 @@ class TelegramConversation:
             await self._captcha(c)
         else:
             await self._resume(c)
+
+    async def _prompt_login(self, c: Conversation, *, failed: bool = False) -> None:
+        if c.client:
+            await c.client.close()
+            c.client = None
+        c.credentials = None
+        c.pending_username = None
+        c.credentials_unverified = False
+        c.challenge = None
+        self._stage(c, "login")
+        prefix = "RuTracker login failed. Please try again.\n" if failed else ""
+        await self._screen(c, prefix + "Enter your RuTracker login, or /cancel.", ("cancel",))
 
     async def _captcha(self, c: Conversation) -> None:
         if c.challenge.user_id != c.user_id or c.challenge.chat_id != c.chat_id:
@@ -466,6 +515,9 @@ class TelegramConversation:
         )
 
     async def _resume(self, c: Conversation) -> None:
+        if c.credentials_unverified:
+            await asyncio.to_thread(self.store.save_credentials, c.user_id, c.credentials)
+            c.credentials_unverified = False
         c.challenge = None
         if c.resume == "search":
             await self._search(c, reauthenticate=False)

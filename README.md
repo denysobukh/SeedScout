@@ -15,7 +15,7 @@ uv sync --locked
 cp .env.example .env
 ```
 
-Edit `.env` with your Telegram bot token, your own Telegram user ID, RuTracker login, and Transmission RPC address. The example values are placeholders. The comma-separated user allowlist is mandatory. Transmission credentials must both be set or both left empty. Keep authentication outside the RPC URL. RuTracker's host is fixed by the specification; it is not a configurable download URL.
+Edit `.env` with your Telegram bot token, your own Telegram user ID and Transmission RPC address. The example values are placeholders. The comma-separated user allowlist is mandatory. Transmission credentials must both be set or both left empty. Keep authentication outside the RPC URL. RuTracker's host is fixed by the specification; it is not a configurable download URL.
 
 Environment variables override `.env`, including empty values. Only `.env` in the current working directory is read; secrets are not interpolated. Run commands from the project root. Relative paths are relative to that directory. `DATABASE_PATH` defaults to `.runtime/bot.db`; normal startup initializes the SQLite store, while configuration validation does not create it. `TRANSMISSION_RPC_URL` defaults to `http://127.0.0.1:9091/transmission/rpc` when omitted; step 4 never contacts Transmission. Leave `TRANSMISSION_DOWNLOAD_DIR` empty to use Transmission's default; a supplied path refers to the Transmission host.
 
@@ -33,6 +33,10 @@ Start the bot from the project root:
 uv run --locked tg-torrent-downloader
 ```
 
+RuTracker login and password are stored per Telegram user in SQLite, rather than environment variables. In a private chat, `/start` reuses stored credentials; if none exist, the bot asks for login, then password in separate messages. A rejected pair returns to the login prompt with Cancel only, repeating until authentication succeeds or you cancel. CAPTCHA challenges remain part of authentication. Only a successfully authenticated pair is saved, including when authentication completes after CAPTCHA; interrupted searches and descriptions resume afterward. Old `RUTRACKER_USERNAME` / `RUTRACKER_PASSWORD` environment variables are ignored and should be removed from `.env`.
+
+Credentials are stored as plaintext in the ignored local database, with file permissions restricted to its owner (`0600`). Treat database backups as secrets. Login/password inputs are redacted before logging, and pending credentials are discarded on cancellation, expiry, or restart. Only validated credentials survive restarts; cookies remain in memory.
+
 In this workspace, the installed uv executable is also available as `.tools/bin/uv`. Keep the terminal running, open [@SeedScoutBot](https://t.me/SeedScoutBot), and send `/start` from an allowed account. Chrome may open on the host for browser verification. Stop with Ctrl+C.
 
 Exit codes: `0` for a successful configuration check or clean shutdown, `2` for configuration/argument errors, and `1` for startup/polling failures.
@@ -47,13 +51,13 @@ uv run --locked ruff format --check .
 
 `uv.lock` pins application, development, and transitive dependencies. Commit intentional dependency updates together with `pyproject.toml`. SQLite storage uses Python's standard library and requires no additional service.
 
-Logs go to stderr and a rotating UTF-8 diagnostic file (default `.runtime/bot.log`). HTTP headers and POST fields are sanitized before logging; configured credentials are also redacted during formatting. Dependency debug logging is suppressed. Never log raw headers, cookies, response bodies, or settings objects. `.env`, local databases, log files and their rotated backups, and temporary torrent files are ignored by Git.
+Logs go to stderr and a rotating UTF-8 diagnostic file (default `.runtime/bot.log`). HTTP headers and POST fields are sanitized before logging; configured secrets and credentials loaded or entered at runtime are also redacted during formatting. Dependency debug logging is suppressed. Never log raw headers, cookies, response bodies, or settings objects. `.env`, local databases, log files and their rotated backups, and temporary torrent files are ignored by Git.
 
 Read [PROGRESS.md](PROGRESS.md) when resuming work. Each implementation step requires user review before its commit.
 
 ## Workflow storage
 
-`WorkflowStore(Settings.database_path)` provides durable searches and selections. Call `initialize()` once at startup to create its directory and versioned schema. In async handlers, run store operations with `await asyncio.to_thread(...)`; each operation opens and closes its own connection with a bounded lock timeout. No network operation belongs inside a database transaction.
+`WorkflowStore(Settings.database_path)` provides durable searches, selections, and per-user RuTracker credentials. Call `initialize()` once at startup to create its directory and versioned schema (version 2 migrates existing workflow data without losing it). In async handlers, run store operations with `await asyncio.to_thread(...)`; each operation opens and closes its own connection with a bounded lock timeout. No network operation belongs inside a database transaction.
 
 Searches preserve ordered result snapshots and expire after 15 minutes by default. Select and confirm callbacks must supply the requesting Telegram user and chat. Selecting the same result twice returns the same selection. Only a successful `claim_confirmation()` permits torrent retrieval; repeated or competing claims fail. Cancellation only applies to pending selections. Expiry blocks new claims but permits an already confirmed operation to finish.
 
@@ -73,7 +77,7 @@ After authentication, `search(query)` sends the original query as the `nm` searc
 
 `download_torrent(topic_id)` is a separate operation reserved for step 6 after explicit Download confirmation. It checks response type and basic torrent framing; full bencode validation and info-hash calculation belong to step 5. No live torrent retrieval has been performed.
 
-Live verification: a visible-Chrome run obtained `cf_clearance`, verified the full login form, and successfully reused the cookies/User-Agent to fetch `/forum/login.php` through aiohttp (HTTP 200). That browser-transfer check did not submit credentials. A later login investigation verified real credential login, a repeat authenticated-session check, ten search results for a read-only Ubuntu query, and full topic-description extraction. CAPTCHA markup still needs live verification. Earlier direct HTTP login attempts without browser clearance received HTTP 403. Fixtures are synthetic examples, explicitly labeled in `tests/fixtures/rutracker/README.md`; passing them does not establish live compatibility.
+Live verification: a visible-Chrome run obtained `cf_clearance`, verified the full login form, and successfully reused the cookies/User-Agent to fetch `/forum/login.php` through aiohttp (HTTP 200). That browser-transfer check did not submit credentials. A later login investigation verified real credential login, a repeat authenticated-session check, ten search results for a read-only Ubuntu query, and full topic-description extraction. Live CAPTCHA image acquisition has also been verified against static.rutracker.cc; answer submission and the full Telegram CAPTCHA round trip still need live verification. Earlier direct HTTP login attempts without browser clearance received HTTP 403. Fixtures are synthetic examples, explicitly labeled in `tests/fixtures/rutracker/README.md`; passing them does not establish live compatibility.
 
 ## Diagnostic logging
 
@@ -108,3 +112,5 @@ Search snapshots and selections persist in SQLite. The active UI and browser/CAP
 Automated conversation tests use fake upstream services and an actual aiogram router dispatch check. A read-only Telegram getMe check verified the saved token belongs to @SeedScoutBot. A user-requested live Telegram run exposed an authentication-marker bug after /start. The bot was stopped, and the parser was fixed to recognize RuTracker's nonempty #logged-in-username marker. Live backend login/search/topic checks now pass; the fixed Telegram conversation and real CAPTCHA delivery still need a walkthrough. Polling remains stopped until explicitly started again.
 
 When RuTracker returns a search table with no recognizable releases, the error response has no inline buttons. The bot returns to query input: any nonempty text, including a number, becomes a fresh unchanged search string. Old controls are invalidated; commands remain available.
+
+CAPTCHA images may be hosted at `https://static.rutracker.cc/captcha/`. The client permits that exact CDN/path only for image GETs, using a separate cookie-free HTTP session and no forwarded authentication headers. Login, search, topic, and torrent requests remain constrained to rutracker.org.

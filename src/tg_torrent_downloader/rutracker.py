@@ -143,6 +143,36 @@ def _source_url(value: str, base: str = _FORUM) -> str:
     return url
 
 
+def _captcha_source_url(value: str, base: str = _FORUM) -> str:
+    """Only the observed CAPTCHA CDN path or the legacy same-origin endpoint."""
+    if "\\" in value or any(c.isspace() or ord(c) < 32 for c in value):
+        raise UnexpectedPage("RuTracker returned an unsupported CAPTCHA URL")
+    try:
+        url = urljoin(base, value)
+        parts = urlsplit(url)
+        valid = (
+            parts.scheme == "https"
+            and parts.port in (None, 443)
+            and parts.username is None
+            and parts.password is None
+            and not parts.fragment
+            and (
+                (
+                    parts.hostname == "static.rutracker.cc"
+                    and parts.path.startswith("/captcha/")
+                    and ".." not in parts.path
+                    and "%" not in parts.path
+                )
+                or (parts.hostname == "rutracker.org" and parts.path == "/forum/captcha.php")
+            )
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise UnexpectedPage("RuTracker returned an unsupported CAPTCHA URL")
+    return url
+
+
 def _soup(response: _Response) -> BeautifulSoup:
     if response.content_type not in {"text/html", "application/xhtml+xml"}:
         raise UnexpectedPage("RuTracker returned an unexpected page format")
@@ -188,7 +218,7 @@ def _login_form(page: BeautifulSoup) -> _LoginForm | None:
         image = form.select_one('img[src*="captcha"]')
         if image is None:
             raise UnexpectedPage("RuTracker CAPTCHA image is missing")
-        image_url = _source_url(str(image.get("src", "")))
+        image_url = _captcha_source_url(str(image.get("src", "")))
     meta = page.select_one("meta[charset]")
     encoding = str(meta.get("charset")) if meta else (page.original_encoding or "windows-1251")
     if not meta:
@@ -475,11 +505,45 @@ class RuTrackerClient:
         data: bytes | None = None,
         limit: int = _MAX_HTML,
         headers: dict[str, str] | None = None,
+        captcha_image: bool = False,
     ) -> _Response:
         if self._session is None:
             raise RuntimeError("Use RuTrackerClient as an async context manager")
-        url = _source_url(url)
-        # Follow only same-origin redirects, checking BEFORE each request (including credentials).
+        validator = _captcha_source_url if captcha_image else _source_url
+        url = validator(url)
+        if captcha_image and (method != "GET" or data is not None):
+            raise UnexpectedPage("CAPTCHA retrieval only supports GET without form data")
+        if captcha_image and urlsplit(url).hostname == "static.rutracker.cc":
+            # Never transfer RuTracker credentials or session cookies to the image CDN.
+            async with self._new_http_session(
+                jar=aiohttp.DummyCookieJar(),
+                user_agent=self._session.headers["User-Agent"],
+            ) as images:
+                return await self._fetch(
+                    images,
+                    method,
+                    url,
+                    data=data,
+                    limit=limit,
+                    headers=None,
+                    validator=validator,
+                )
+        return await self._fetch(
+            self._session, method, url, data=data, limit=limit, headers=headers, validator=validator
+        )
+
+    async def _fetch(
+        self,
+        transport,
+        method: str,
+        url: str,
+        *,
+        data: bytes | None,
+        limit: int,
+        headers: dict[str, str] | None,
+        validator,
+    ) -> _Response:
+        # Validate every redirect against the request-specific origin and path policy.
         request_id = uuid4().hex
         for hop in range(6):
             context = {"request_id": request_id, "hop": hop, "post_data": safe_post_data(data)}
@@ -496,7 +560,7 @@ class RuTrackerClient:
                 post_data=context["post_data"],
             )
             try:
-                async with self._session.request(
+                async with transport.request(
                     method,
                     url,
                     data=data,
@@ -519,7 +583,7 @@ class RuTrackerClient:
                         location = response.headers.get("Location")
                         if not location:
                             raise UnexpectedPage("RuTracker redirect target is missing")
-                        target = _source_url(location, url)
+                        target = validator(location, url)
                         if method == "POST" and response.status in {307, 308}:
                             raise UnexpectedPage(
                                 "RuTracker requested an unsupported login redirect"
@@ -529,9 +593,10 @@ class RuTrackerClient:
                             method, data, headers = "GET", None, None
                         continue
                     if response.status in {401, 403}:
-                        self._browser_ready = False
-                        self._browser_login_html = None
-                        self._pending = None
+                        if transport is self._session:
+                            self._browser_ready = False
+                            self._browser_login_html = None
+                            self._pending = None
                         raise AccessDenied(
                             "RuTracker denied access; retry later or check connectivity"
                         )
@@ -605,7 +670,7 @@ class RuTrackerClient:
     async def _challenge(self, form: _LoginForm) -> CaptchaChallenge:
         if form.image_url is None:
             raise UnexpectedPage("RuTracker CAPTCHA image was not found")
-        response = await self._request("GET", form.image_url, limit=_MAX_IMAGE)
+        response = await self._request("GET", form.image_url, limit=_MAX_IMAGE, captcha_image=True)
         if (
             response.content_type not in {"image/png", "image/jpeg", "image/gif", "image/webp"}
             or not response.body

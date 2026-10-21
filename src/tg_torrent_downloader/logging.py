@@ -145,8 +145,14 @@ def log_state(
 class RedactingFormatter(logging.Formatter):
     def __init__(self, secrets: tuple[str, ...]) -> None:
         super().__init__("%(asctime)s %(levelname)s %(name)s: %(message)s")
-        variants = set()
+        self.secrets = []
+        self.add_secrets(secrets)
+
+    def add_secrets(self, secrets: tuple[str, ...]) -> None:
+        variants = set(self.secrets)
         for secret in secrets:
+            if not secret:
+                continue
             variants.update((secret, json.dumps(secret, ensure_ascii=False)[1:-1]))
             for encoding in ("utf-8", "cp1251"):
                 try:
@@ -211,3 +217,14 @@ def configure_logging(settings: Settings) -> None:
     # HTTP diagnostics use our sanitized records, never dependency debug output.
     for name in ("aiohttp", "aiogram", "httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def register_secrets(*secrets: str) -> None:
+    """Extend output redaction for credentials acquired after application startup."""
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler.formatter, RedactingFormatter):
+            handler.acquire()
+            try:
+                handler.formatter.add_secrets(secrets)
+            finally:
+                handler.release()

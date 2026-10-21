@@ -26,9 +26,9 @@ async def run_bot(settings: Settings) -> None:
         bot,
         store,
         settings.telegram_allowed_user_ids,
-        lambda user_id, chat_id: RuTrackerClient(
-            settings.rutracker_username,
-            settings.rutracker_password,
+        lambda user_id, chat_id, username, password: RuTrackerClient(
+            username,
+            password,
             user_id=user_id,
             chat_id=chat_id,
         ),

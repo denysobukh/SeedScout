@@ -18,8 +18,6 @@ class ConfigurationError(ValueError):
 class Settings:
     telegram_bot_token: str
     telegram_allowed_user_ids: frozenset[int]
-    rutracker_username: str
-    rutracker_password: str
     transmission_rpc_url: str
     transmission_username: str | None
     transmission_password: str | None
@@ -112,8 +110,6 @@ class Settings:
         return cls(
             telegram_bot_token=token,
             telegram_allowed_user_ids=allowed_ids,
-            rutracker_username=required("RUTRACKER_USERNAME"),
-            rutracker_password=required("RUTRACKER_PASSWORD"),
             transmission_rpc_url=url,
             transmission_username=username,
             transmission_password=password,
@@ -130,8 +126,6 @@ class Settings:
             value
             for value in (
                 self.telegram_bot_token,
-                self.rutracker_username,
-                self.rutracker_password,
                 self.transmission_username,
                 self.transmission_password,
             )

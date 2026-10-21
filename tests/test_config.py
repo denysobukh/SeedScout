@@ -10,8 +10,6 @@ def env():
     return {
         "TELEGRAM_BOT_TOKEN": "123456789:abcdefghijklmnopqrstuvwxyz_123456789",
         "TELEGRAM_ALLOWED_USER_IDS": "123, 456,123",
-        "RUTRACKER_USERNAME": "tracker-user",
-        "RUTRACKER_PASSWORD": "secret-password",
         "TRANSMISSION_RPC_URL": "http://127.0.0.1:9091/transmission/rpc",
     }
 
@@ -32,8 +30,6 @@ def test_valid_settings_are_private_and_immutable(env):
     [
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_ALLOWED_USER_IDS",
-        "RUTRACKER_USERNAME",
-        "RUTRACKER_PASSWORD",
         "TRANSMISSION_RPC_URL",
     ],
 )
@@ -98,18 +94,19 @@ def test_rpc_credentials_must_be_paired(env, key):
 
 def test_env_overrides_dotenv_without_interpolation_or_process_mutation(env, tmp_path, monkeypatch):
     path = tmp_path / ".env"
-    path.write_text("RUTRACKER_PASSWORD=${SECRET}\nLOG_LEVEL=DEBUG\n")
+    path.write_text(
+        "TRANSMISSION_USERNAME=user\nTRANSMISSION_PASSWORD=${SECRET}\nLOG_LEVEL=DEBUG\n"
+    )
     monkeypatch.delenv("LOG_LEVEL", raising=False)
     values = env.copy()
-    del values["RUTRACKER_PASSWORD"]
     settings = Settings.load(values, env_file=path)
-    assert settings.rutracker_password == "${SECRET}"
+    assert settings.transmission_password == "${SECRET}"
     assert settings.log_level == "DEBUG"
     import os
 
     assert "LOG_LEVEL" not in os.environ
-    values["RUTRACKER_PASSWORD"] = ""
-    with pytest.raises(ConfigurationError, match="RUTRACKER_PASSWORD"):
+    values["TRANSMISSION_PASSWORD"] = ""
+    with pytest.raises(ConfigurationError, match="must be paired"):
         Settings.load(values, env_file=path)
 
 
@@ -176,3 +173,11 @@ def test_logging_defaults_and_overrides(env, tmp_path):
     assert settings.log_file == tmp_path / "custom.log"
     assert settings.log_max_bytes == 1000
     assert settings.log_backup_count == 2
+
+
+def test_tracker_credentials_are_not_environment_configuration(env):
+    env.update(RUTRACKER_USERNAME="ignored-user", RUTRACKER_PASSWORD="ignored-password")
+    settings = Settings.load(env, env_file=None)
+    assert not hasattr(settings, "rutracker_username")
+    assert not hasattr(settings, "rutracker_password")
+    assert "ignored-password" not in settings.secret_values()

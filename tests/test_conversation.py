@@ -7,7 +7,7 @@ import pytest
 from aiogram.types import CallbackQuery, Chat, Message, User
 
 from tg_torrent_downloader.conversation import TelegramConversation, split_text
-from tg_torrent_downloader.models import SelectionStatus, TorrentResult
+from tg_torrent_downloader.models import RuTrackerCredentials, SelectionStatus, TorrentResult
 from tg_torrent_downloader.rutracker import (
     AuthenticationRequired,
     CaptchaChallenge,
@@ -110,17 +110,20 @@ def callback(data, user_id=1, chat_id=10):
 
 
 class Harness:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, *, credentials=True):
         self.now = [1000.0]
         self.store = WorkflowStore(tmp_path / "test.db", clock=lambda: self.now[0])
         self.store.initialize()
+        if credentials:
+            self.store.save_credentials(1, RuTrackerCredentials("saved-user", "saved-password"))
         self.bot = FakeBot()
         self.clients = []
         self.next_client = FakeTracker()
 
-        def factory(user, chat):
+        def factory(user, chat, username, password):
             client = self.next_client
             self.next_client = FakeTracker()
+            client.credentials = RuTrackerCredentials(username, password)
             self.clients.append(client)
             return client
 
@@ -335,13 +338,17 @@ def test_network_retry_preserves_query(h):
     asyncio.run(run())
 
 
-def test_invalid_credentials_do_not_offer_automatic_retry(h):
+def test_invalid_credentials_return_to_login_without_search_or_retry(h):
     async def run():
         h.next_client.auth_outcomes = [InvalidCredentials("bad")]
         await h.send("/start")
         assert "retry" not in h.state.actions
-        assert h.state.stage == "error"
-        assert "configured credentials" in h.bot.messages[-1]["text"]
+        assert h.state.stage == "login"
+        assert h.state.actions == ("cancel",)
+        assert "login failed" in h.bot.messages[-1]["text"]
+        assert "Enter your RuTracker login" in h.bot.messages[-1]["text"]
+        assert h.store.get_credentials(1) is None
+        assert h.client.closed
 
     asyncio.run(run())
 
@@ -616,5 +623,144 @@ def test_unrecognized_search_results_have_no_buttons_and_next_input_is_query(h, 
         assert h.client.queries == ["first query", query]
         assert not h.client.topics
         assert h.state.stage == "results"
+
+    asyncio.run(run())
+
+
+def test_new_user_login_password_steps_and_restart_reuse(tmp_path):
+    h = Harness(tmp_path, credentials=False)
+
+    async def run():
+        await h.send("/start")
+        assert h.state.stage == "login" and not h.clients
+        await h.send("new-user")
+        assert h.state.stage == "password" and not h.clients
+        assert h.store.get_credentials(1) is None
+        await h.send("/password-with-slash")
+        pair = RuTrackerCredentials("new-user", "/password-with-slash")
+        assert h.client.credentials == pair
+        assert h.state.stage == "query"
+        assert h.store.get_credentials(1) == pair
+        await h.flow.close()
+        h.flow = TelegramConversation(h.bot, h.store, frozenset({1, 2}), h.factory)
+        await h.send("/start")
+        assert h.state.stage == "query"
+        assert h.client.credentials == pair
+        assert h.store.get_credentials(2) is None
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_bad_credentials_loop_until_valid_and_never_persist_candidates(tmp_path):
+    h = Harness(tmp_path, credentials=False)
+
+    async def run():
+        await h.send("/start")
+        for attempt in range(2):
+            client = h.next_client
+            client.auth_outcomes = [InvalidCredentials("rejected")]
+            await h.send(f"wrong-{attempt}")
+            assert h.state.stage == "password"
+            await h.send("bad-password")
+            assert h.state.stage == "login" and h.state.actions == ("cancel",)
+            assert h.store.get_credentials(1) is None
+            assert client.closed and h.state.credentials is None
+        await h.send("valid-user")
+        await h.send("valid-password")
+        assert h.state.stage == "query"
+        assert h.store.get_credentials(1) == RuTrackerCredentials("valid-user", "valid-password")
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_captcha_credentials_saved_only_after_success(tmp_path):
+    h = Harness(tmp_path, credentials=False)
+
+    async def run():
+        h.next_client.auth_outcomes = [
+            CaptchaChallenge("login", 1, 10, b"image", "image/png", 1300)
+        ]
+        await h.send("/start")
+        await h.send("candidate-user")
+        await h.send("candidate-password")
+        assert h.state.stage == "captcha"
+        assert h.store.get_credentials(1) is None
+        await h.send("answer")
+        assert h.state.stage == "query"
+        assert h.store.get_credentials(1) == RuTrackerCredentials(
+            "candidate-user", "candidate-password"
+        )
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_rejected_captcha_login_returns_to_credentials(tmp_path):
+    h = Harness(tmp_path, credentials=False)
+
+    async def run():
+        h.next_client.auth_outcomes = [
+            CaptchaChallenge("login", 1, 10, b"image", "image/png", 1300)
+        ]
+        h.next_client.captcha_outcomes = [InvalidCredentials("bad")]
+        await h.send("/start")
+        await h.send("bad-user")
+        await h.send("bad-password")
+        await h.send("answer")
+        assert h.state.stage == "login"
+        assert h.store.get_credentials(1) is None
+        assert h.state.challenge is None
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_credentials_inputs_are_redacted_and_cancel_clears_pending(tmp_path, caplog):
+    h = Harness(tmp_path, credentials=False)
+
+    async def run():
+        with caplog.at_level(logging.INFO):
+            await h.send("/start")
+            await h.send("private-login")
+            await h.send("private-password")
+        assert "private-login" not in caplog.text
+        assert "private-password" not in caplog.text
+        await h.flow.close()
+        # A different allowed user must enter their own credentials.
+        await h.send("/start", user_id=2)
+        await h.send("pending-login", user_id=2)
+        state = h.flow.sessions[(2, 10)]
+        await h.send("/cancel", user_id=2)
+        assert state.credentials is None and state.pending_username is None
+        assert h.store.get_credentials(2) is None
+
+    asyncio.run(run())
+
+
+def test_failed_reauthentication_preserves_search_until_new_credentials(h):
+    async def run():
+        await h.send("/start")
+        h.client.search_outcomes = [AuthenticationRequired("expired")]
+        h.client.auth_outcomes = [InvalidCredentials("bad")]
+        await h.send("saved query")
+        assert h.state.stage == "login" and h.state.query == "saved query"
+        await h.send("replacement-user")
+        await h.send("replacement-password")
+        assert h.state.stage == "results"
+        assert h.client.queries == ["saved query"]
+        assert h.store.get_credentials(1).username == "replacement-user"
+        await h.flow.close()
+
+    asyncio.run(run())
+
+
+def test_group_chat_does_not_collect_credentials(h):
+    async def run():
+        group = message("/start").model_copy(update={"chat": Chat(id=-10, type="group")})
+        await h.flow.handle_message(group)
+        assert not h.flow.sessions and not h.clients
+        assert "private chat" in h.bot.messages[-1]["text"]
 
     asyncio.run(run())

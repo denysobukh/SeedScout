@@ -14,8 +14,6 @@ def run_cli(tmp_path, *args, configured=False, overrides=None, mock_polling=Fals
             {
                 "TELEGRAM_BOT_TOKEN": "123456789:abcdefghijklmnopqrstuvwxyz_123456789",
                 "TELEGRAM_ALLOWED_USER_IDS": "123",
-                "RUTRACKER_USERNAME": "test-user",
-                "RUTRACKER_PASSWORD": "test-password",
                 "TRANSMISSION_RPC_URL": "http://127.0.0.1:1/transmission/rpc",
             }
         )

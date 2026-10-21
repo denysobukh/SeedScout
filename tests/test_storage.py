@@ -288,3 +288,37 @@ def test_committed_selection_state_is_logged_without_worker_claim(state, caplog)
     assert all(event["user_id"] == 1 and event["chat_id"] == -2 for event in events)
     assert all(event["topic_id"] == 123 for event in events)
     assert item.claim_token not in caplog.text
+
+
+def test_credentials_are_private_per_user_and_survive_restart(state):
+    from tg_torrent_downloader.models import RuTrackerCredentials
+
+    store, _ = state
+    pair = RuTrackerCredentials("private-user", "private-password")
+    store.save_credentials(1, pair)
+    assert store.get_credentials(1) == pair
+    assert store.get_credentials(2) is None
+    assert "private-password" not in repr(pair)
+    assert store.path.stat().st_mode & 0o777 == 0o600
+    restored = WorkflowStore(store.path)
+    restored.initialize()
+    assert restored.get_credentials(1) == pair
+    newer = RuTrackerCredentials("new-user", "new-password")
+    store.save_credentials(1, newer)
+    store.forget_credentials(1, pair)
+    assert store.get_credentials(1) == newer
+    store.forget_credentials(1, newer)
+    assert store.get_credentials(1) is None
+
+
+def test_version_one_migration_preserves_workflow(state):
+    store, _ = state
+    item = selection(store)
+    with sqlite3.connect(store.path) as db:
+        db.execute("DROP TABLE rutracker_credentials")
+        db.execute("PRAGMA user_version = 1")
+    store.initialize()
+    assert store.get_selection(item.id, 1, -2) == item
+    assert store.get_credentials(1) is None
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2

@@ -35,9 +35,12 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 - Search rutracker.org and retrieve topic metadata and torrent files.
 - Before the first HTTP authentication check, use asynchronous Playwright with visible Google Chrome to visit `/forum/index.php`, let its JavaScript establish a session, then open `/forum/login.php`. Wait for visible username/password fields in `#login-form-full`, require a matching main-frame HTTP 200 response, and verify the final login URL.
 - Capture `cf_clearance`, other applicable RuTracker session cookies, and the browser's actual User-Agent. Reuse them together in the HTTP client, preserving cookie domain/path, secure/HttpOnly flags, and expiry. Keep browser contexts isolated per user/chat workflow.
-- Check authentication before asking for a query. If login is needed, use the rendered login form (`login_username`, `login_password`) and POST configured credentials to `/forum/login.php` with the imported browser session.
+- Check authentication before asking for a query. If login is needed, use the rendered login form (`login_username`, `login_password`) and POST the user’s credentials to `/forum/login.php` with the imported browser session.
 - Reuse the session for later search, topic, and torrent requests. If access is denied, invalidate the browser session and require fresh browser verification on retry; never automatically replay a login POST. Keep cookies and rendered HTML in memory, out of logs and Git. Restart requires fresh verification.
-- When login requires CAPTCHA, deliver its image to the requesting user, submit their answer, and repeat with a refreshed image when necessary. Scope challenges and answers to that user and chat, expire challenges, and support cancellation.
+- Store validated RuTracker login/password pairs in SQLite, scoped to the allowed Telegram user. Reuse them after restarts. If credentials are absent, prompt for login and password in two separate private-chat steps before attempting authentication.
+- Invalid credentials → remove that rejected saved pair, show the failure and login prompt with Cancel only (no New search or automatic Retry), then collect password and attempt authentication again. Repeat until authenticated or cancelled. Keep interrupted search/description state for resumption.
+- Keep candidate credentials in memory until successful authentication, including any CAPTCHA challenge. Never save rejected or unverified pairs. Redact login/password inputs before logging and protect the local credential database with owner-only file permissions.
+- When login requires CAPTCHA, deliver its image to the requesting user, submit their answer, and repeat with a refreshed image when necessary. Allow CAPTCHA image GET requests only from the legacy RuTracker CAPTCHA endpoint or HTTPS static.rutracker.cc/captcha/; use a separate cookie-free session for the CDN and never forward login headers, credentials, or session cookies to it. Scope challenges and answers to that user and chat, expire challenges, and support cancellation.
 - Preserve queries and selected topics across session reauthentication. Retrieve the full release description only after selection; opening a description must not download a torrent file.
 - Preserve the association between each displayed result, its topic, and the downloaded torrent file.
 - Handle no results, authentication failures, unavailable topics, network errors, and unexpected response formats with actionable messages.
@@ -56,7 +59,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 
 ## Configuration and security
 
-- Configure the Telegram bot token, RuTracker credentials, Transmission RPC URL and credentials, and optional download directory outside source code.
+- Configure the Telegram bot token, Transmission RPC URL and credentials, and optional download directory outside source code. RuTracker login/password come from the Telegram credential flow and SQLite, never environment variables.
 - Support an allowlist of Telegram user IDs to restrict use of the bot; reject unauthorized requests before making upstream calls.
 - Never commit credentials, session cookies, downloaded torrent files, or local runtime state.
 - Do not expose credentials, tokens, or cookies in logs or Telegram messages.

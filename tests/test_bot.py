@@ -12,8 +12,6 @@ def test_polling_lifecycle_initializes_storage_and_closes_bot(tmp_path, monkeypa
         {
             "TELEGRAM_BOT_TOKEN": "123456789:abcdefghijklmnopqrstuvwxyz_123456789",
             "TELEGRAM_ALLOWED_USER_IDS": "1",
-            "RUTRACKER_USERNAME": "user",
-            "RUTRACKER_PASSWORD": "password",
             "DATABASE_PATH": str(tmp_path / "state.db"),
         },
         env_file=None,
