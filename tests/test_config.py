@@ -181,3 +181,23 @@ def test_tracker_credentials_are_not_environment_configuration(env):
     assert not hasattr(settings, "rutracker_username")
     assert not hasattr(settings, "rutracker_password")
     assert "ignored-password" not in settings.secret_values()
+
+
+def test_transmission_app_path_is_optional_and_configurable(env):
+    assert Settings.load(env, env_file=None).transmission_app_path is None
+    env["TRANSMISSION_APP_PATH"] = "/Applications/Transmission.app"
+    assert (
+        str(Settings.load(env, env_file=None).transmission_app_path) == env["TRANSMISSION_APP_PATH"]
+    )
+    env["TRANSMISSION_APP_PATH"] = ""
+    assert Settings.load(env, env_file=None).transmission_app_path is None
+
+
+@pytest.mark.parametrize(
+    "path", ["relative.app", "/Applications/Other", "   ", "/bad\x00.app", "/bad\n.app"]
+)
+def test_transmission_app_path_validation_does_not_echo_values(env, path):
+    env["TRANSMISSION_APP_PATH"] = path
+    with pytest.raises(ConfigurationError, match="TRANSMISSION_APP_PATH") as caught:
+        Settings.load(env, env_file=None)
+    assert path not in str(caught.value)

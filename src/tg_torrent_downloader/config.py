@@ -42,6 +42,7 @@ def validate_rpc_url(url: str) -> None:
 class Settings:
     telegram_bot_token: str
     telegram_allowed_user_ids: frozenset[int]
+    transmission_app_path: Path | None
     transmission_rpc_url: str
     transmission_username: str | None
     transmission_password: str | None
@@ -82,6 +83,23 @@ class Settings:
             raise ConfigurationError("TELEGRAM_ALLOWED_USER_IDS contains an out-of-range ID")
         url = values.get("TRANSMISSION_RPC_URL", "http://127.0.0.1:9091/transmission/rpc")
         validate_rpc_url(url)
+        raw_app_path = values.get("TRANSMISSION_APP_PATH") or ""
+        app_path = None
+        if raw_app_path:
+            if not raw_app_path.strip() or any(ord(c) < 32 for c in raw_app_path):
+                raise ConfigurationError(
+                    "TRANSMISSION_APP_PATH must be an absolute .app bundle path"
+                )
+            try:
+                app_path = Path(raw_app_path).expanduser()
+            except RuntimeError:
+                raise ConfigurationError(
+                    "TRANSMISSION_APP_PATH home directory could not be resolved"
+                ) from None
+            if not app_path.is_absolute() or app_path.suffix.lower() != ".app":
+                raise ConfigurationError(
+                    "TRANSMISSION_APP_PATH must be an absolute .app bundle path"
+                )
         username = values.get("TRANSMISSION_USERNAME") or None
         password = values.get("TRANSMISSION_PASSWORD") or None
         if (username is None) != (password is None):
@@ -115,6 +133,7 @@ class Settings:
         return cls(
             telegram_bot_token=token,
             telegram_allowed_user_ids=allowed_ids,
+            transmission_app_path=app_path,
             transmission_rpc_url=url,
             transmission_username=username,
             transmission_password=password,

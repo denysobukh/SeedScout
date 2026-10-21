@@ -97,6 +97,14 @@ Cookies retain their domain/path, secure/HttpOnly flags, and expiry in the HTTP 
 
 No Netscape cookie jar, User-Agent export, or rendered HTML file is written by default. The example artifact names `.rutracker-cookies.txt`, `.rutracker-user-agent.txt`, and `rutracker_login.html` are ignored as a precaution if used during manual diagnostics. Browser document request/response headers use the same sanitization as other diagnostics; session values and HTML are never logged.
 
+## Local Transmission startup
+
+The local app is `/Applications/Transmission.app`. Set `TRANSMISSION_APP_PATH=/Applications/Transmission.app` in `.env` to enable automatic startup on macOS. Leave it empty or omit it for a remote server or daemon-only setup. `--check-config` validates the setting without opening applications.
+
+Before workflow recovery and Telegram polling, the bot checks whether Transmission is running for the current macOS user. If stopped, it opens the configured app in the background, waits for its process, and tells each allowed Telegram user: "Transmission was not running, so I started it." An already running app is left open without a notification. Launch failures produce a diagnostic notification and the bot continues polling; a failed notification does not prevent other recipients or startup.
+
+Enable Remote Access in Transmission and configure the matching RPC address/authentication separately. Starting the GUI does not guarantee RPC readiness or change its preferences. Startup never retrieves or submits a torrent.
+
 ## Transmission client and torrent validation (step 5)
 
 `TransmissionClient.from_settings(settings)` is an asynchronous context manager with `session_info()`, `find_torrent(info_hash)`, and `add_torrent(data, expected_info_hash=...)`. It is independent of Telegram and SQLite; `DownloadWorkflow` connects it to the user-confirmed workflow.

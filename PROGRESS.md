@@ -6,11 +6,11 @@ Read this file, IMPLEMENTATION_PLAN.md, and SPECIFICATION.md before making chang
 
 ## Current checkpoint
 
-- Language: Python. Repository: main; latest approved commit is 3ebde71 (step 6 confirmed downloads and recovery).
+- Language: Python. Repository: main; latest approved commit is 0b7c467 (Cancel-button removal and shorter prompts).
 - Steps 1–6 and the approved search/login/UI updates are committed. User approved committing removal of all Cancel buttons and shorter login/search prompts.
 - Step 6 connects explicit Download confirmation to retrieval, validation, durable submission and outcome reporting. It adds /status, schema version 3/found outcomes, transactional unresolved-hash guards, cancellation-safe writes, and startup recovery under a per-database runtime lock.
 - Agent verification used synthetic torrents and fake services only for submissions. Earlier read-only live checks reached Transmission 4.1.3/RPC 19/API 6.0.1; no agent-initiated live torrent retrieval/submission has been performed.
-- Next action: step 7 (operational readiness and acceptance review) when authorized. A user-selected live end-to-end torrent test remains pending.
+- Transmission app startup follow-up: approved by the user for commit; validation below. Remaining step 7 readiness/acceptance work and a user-selected live end-to-end torrent test remain pending.
 
 ## Step tracker
 
@@ -268,3 +268,14 @@ Initial commit: specification, implementation plan, progress file, and .gitignor
 - Validation: all 67 conversation tests passed; Ruff lint/format and whitespace checks passed. Starting the updated bot for the ongoing Telegram review; prompts and Cancel-button removal remain uncommitted.
 
 - User approved committing Cancel-button removal and the exact shortened login/search prompts. Included docs and updated conversation expectations. Validation: 67 conversation tests passed; Ruff lint/format and whitespace checks passed. Step 7 remains pending user instruction.
+
+## Transmission app startup follow-up
+
+- Located installed Transmission 4.1.3 at /Applications/Transmission.app; verified bundle identifier/executable. Added TRANSMISSION_APP_PATH to config and .env.example, and set the real ignored owner-only .env to this path without changing secrets. Blank/omitted disables local launch.
+- Startup checks the current user’s process before recovery/polling, opens the exact validated macOS bundle in the background if stopped, and bounds subprocess/launch waits. Already running is quiet. Allowed Telegram users are notified when launched or on launch failure; failed notifications do not prevent other recipients or normal polling. No app preferences, torrents, or running Transmission processes are changed.
+- Added isolated process/bundle/config/lifecycle tests for running/stopped/failing startup, notification failures, cancellation/timeouts, invalid bundles, and remote setup. Live stopped-app testing is replaced by fake process tests to preserve the user’s running instance.
+- Updated specification, implementation plan, and README. This follow-up does not complete all step 7 work. Changes remain uncommitted for user review; final validation/runtime results follow.
+
+- Final validation: all 379 regression tests passed; Ruff lint/format, configuration validation, and git whitespace checks passed. Confirmed .env remains ignored. Restarted the updated bot; live startup logged transmission.app.running before download.recovery (zero interrupted operations). Existing Transmission was kept running; actual stopped-app launch is covered by mocks. The bot is running for Telegram review. Changes remain uncommitted.
+
+- User approved committing the Transmission app startup follow-up. Included optional app-path configuration, startup process check/launch and notifications, tests, and documentation. Validation remains 379 passing tests plus lint/format/configuration/whitespace checks. Real .env stays ignored and is excluded from the commit. Remaining step 7 acceptance work is pending.

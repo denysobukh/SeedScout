@@ -52,6 +52,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 
 ### Transmission integration
 
+- Allow an optional macOS `TRANSMISSION_APP_PATH`. Before recovery/polling, check the current user’s Transmission process and launch the configured bundle in the background if stopped, with bounded waits. Notify all allowed Telegram users when the bot starts Transmission or cannot start it; already running or disabled startup is quiet. Notification/launch failure must not prevent normal polling. Keep RPC configuration separate; do not change app preferences or submit torrents during this check. A blank/omitted path disables local launch for remote or daemon-only deployments.
 - Connect to a configurable Transmission RPC endpoint with optional authentication. Negotiate the target version; use JSON-RPC 2.0 for API 6.x and the legacy format for RPC versions 14–17. Reject unsupported versions before mutation.
 - Validate canonical BitTorrent v1 metainfo and derive its info hash from the original encoded info dictionary before submission. Limit bytes/depth/nodes and check file layouts, paths, piece lengths and piece counts. Reject unsupported v2/hybrid and symlink metainfo explicitly.
 - Negotiate the RPC session token with bounded HTTP 409 retries, match response IDs, reject redirects, and bound RPC timeouts/response sizes. Do not log raw RPC errors, authorization/session headers, or base64 metainfo.
@@ -65,7 +66,7 @@ See [RUTRACKER_FLOW.md](RUTRACKER_FLOW.md) for the confirmed decision tree and r
 
 ## Configuration and security
 
-- Configure the Telegram bot token, Transmission RPC URL and credentials, and optional download directory outside source code. RuTracker login/password come from the Telegram credential flow and SQLite, never environment variables.
+- Configure the Telegram bot token, optional Transmission app path, Transmission RPC URL and credentials, and optional download directory outside source code. RuTracker login/password come from the Telegram credential flow and SQLite, never environment variables.
 - Support an allowlist of Telegram user IDs to restrict use of the bot; reject unauthorized requests before making upstream calls.
 - Never commit credentials, session cookies, downloaded torrent files, or local runtime state.
 - Do not expose credentials, tokens, or cookies in logs or Telegram messages.
