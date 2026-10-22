@@ -67,10 +67,10 @@ def test_plist_uses_absolute_venv_arguments_and_working_directory(tmp_path, monk
         assert value["UserName"] != "root"
 
 
-@pytest.mark.parametrize("restart_at", range(4))
+@pytest.mark.parametrize("restart_at", range(8))
 def test_restart_at_every_prompt_reuses_original_defaults(monkeypatch, restart_at):
-    answers = ["agent", TOKEN, "1,2", "yes"]
-    supplied = iter(answers[:restart_at] + [":restart"] + ["", "", "", "yes"])
+    answers = ["agent", TOKEN, "1,2", "http://other:9091/rpc", "yes", "new-user", "new-pass", "yes"]
+    supplied = iter(answers[:restart_at] + [":restart"] + [""] * 7 + ["yes"])
     prompts = []
 
     def reader(label, default="", *, secret=False):
@@ -81,12 +81,60 @@ def test_restart_at_every_prompt_reuses_original_defaults(monkeypatch, restart_a
         return default if not value else value
 
     monkeypatch.setattr(installer, "prompt", reader)
-    mode, values = installer.collect(
-        {"TELEGRAM_BOT_TOKEN": OTHER_TOKEN, "TELEGRAM_ALLOWED_USER_IDS": "99"}, "agent"
-    )
+    original = {
+        "TELEGRAM_BOT_TOKEN": OTHER_TOKEN,
+        "TELEGRAM_ALLOWED_USER_IDS": "99",
+        "TRANSMISSION_RPC_URL": "http://localhost:9091/transmission/rpc",
+        "TRANSMISSION_USERNAME": "original-user",
+        "TRANSMISSION_PASSWORD": "original-password",
+    }
+    mode, values = installer.collect(original, "agent")
     assert mode == "agent"
-    assert values == {"TELEGRAM_BOT_TOKEN": OTHER_TOKEN, "TELEGRAM_ALLOWED_USER_IDS": "99"}
-    assert len(prompts) == restart_at + 5
+    assert values == original
+    assert len(prompts) == restart_at + 9
+
+
+def test_rpc_defaults_and_disabling_authentication(monkeypatch):
+    answers = iter(["", "1", "", "no", "yes"])
+    monkeypatch.setattr("builtins.input", lambda label: next(answers))
+    monkeypatch.setattr(installer.getpass, "getpass", lambda label: TOKEN)
+    _, values = installer.collect(
+        {"TRANSMISSION_USERNAME": "old-user", "TRANSMISSION_PASSWORD": "old-password"},
+        "agent",
+    )
+    assert values["TRANSMISSION_RPC_URL"] == "http://127.0.0.1:9091/transmission/rpc"
+    assert values["TRANSMISSION_USERNAME"] == values["TRANSMISSION_PASSWORD"] == ""
+
+
+def test_rpc_validation_and_hidden_password(monkeypatch, capsys):
+    answers = iter(
+        ["", "1", "invalid-url", "http://localhost:1234/rpc", "maybe", "yes", "", "rpc-user", "yes"]
+    )
+    secrets = iter([TOKEN, "unpaired-password", "private-rpc-password"])
+    monkeypatch.setattr("builtins.input", lambda label: next(answers))
+    monkeypatch.setattr(installer.getpass, "getpass", lambda label: next(secrets))
+    _, values = installer.collect({}, "agent")
+    assert values["TRANSMISSION_RPC_URL"] == "http://localhost:1234/rpc"
+    assert values["TRANSMISSION_USERNAME"] == "rpc-user"
+    assert values["TRANSMISSION_PASSWORD"] == "private-rpc-password"
+    output = capsys.readouterr().out
+    assert "must be an HTTP(S) URL" in output
+    assert TOKEN not in output and "private-rpc-password" not in output
+
+
+def test_empty_rpc_credentials_are_accepted_and_saved(tmp_path, monkeypatch, capsys):
+    answers = iter(["", "1", "", "yes", "", "yes"])
+    secrets = iter([TOKEN, ""])
+    monkeypatch.setattr("builtins.input", lambda label: next(answers))
+    monkeypatch.setattr(installer.getpass, "getpass", lambda label: next(secrets))
+    _, values = installer.collect({}, "agent")
+    assert values["TRANSMISSION_USERNAME"] == values["TRANSMISSION_PASSWORD"] == ""
+    data, _ = installer.prepare_env(tmp_path, None, values)
+    from io import StringIO
+
+    saved = dotenv_values(stream=StringIO(data.decode()), interpolate=False)
+    assert saved["TRANSMISSION_USERNAME"] == saved["TRANSMISSION_PASSWORD"] == ""
+    assert "Transmission authentication=no" in capsys.readouterr().out
 
 
 def test_secret_default_is_masked_and_enter_preserves_it(monkeypatch):

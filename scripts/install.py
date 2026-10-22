@@ -117,6 +117,8 @@ def valid_ids(value):
 
 def collect(values, default_mode):
     """No files are written during prompts, including when the user starts over."""
+    from tg_torrent_downloader.config import ConfigurationError, validate_rpc_url
+
     while True:
         try:
             print(
@@ -150,13 +152,61 @@ def collect(values, default_mode):
                 if valid_ids(users):
                     break
                 print("Enter one or more positive Telegram user IDs separated by commas.")
+            while True:
+                rpc_url = prompt(
+                    "TRANSMISSION_RPC_URL",
+                    values.get("TRANSMISSION_RPC_URL", "http://127.0.0.1:9091/transmission/rpc"),
+                )
+                try:
+                    validate_rpc_url(rpc_url)
+                    break
+                except ConfigurationError as error:
+                    print(error)
+            while True:
+                authentication = (
+                    prompt(
+                        "Transmission RPC requires authentication? (yes/no)",
+                        "yes"
+                        if values.get("TRANSMISSION_USERNAME")
+                        or values.get("TRANSMISSION_PASSWORD")
+                        else "no",
+                    )
+                    .strip()
+                    .lower()
+                )
+                if authentication in {"yes", "no"}:
+                    break
+                print("Choose yes or no.")
+            username = password = ""
+            if authentication == "yes":
+                print("Leave both credentials empty to use RPC without authentication.")
+                while True:
+                    username = prompt(
+                        "TRANSMISSION_USERNAME", values.get("TRANSMISSION_USERNAME") or ""
+                    )
+                    password = prompt(
+                        "TRANSMISSION_PASSWORD",
+                        values.get("TRANSMISSION_PASSWORD") or "",
+                        secret=True,
+                    )
+                    if bool(username) == bool(password):
+                        break
+                    print("Set both RPC credentials, or leave both empty.")
+                authentication = "yes" if username else "no"
             print(
                 f"\nReview: service={mode}; TELEGRAM_BOT_TOKEN=[configured]; "
-                f"TELEGRAM_ALLOWED_USER_IDS={users}"
+                f"TELEGRAM_ALLOWED_USER_IDS={users}; TRANSMISSION_RPC_URL={rpc_url}; "
+                f"Transmission authentication={authentication}"
             )
             answer = prompt("Save configuration and install service? (yes/no/:restart)", "no")
             if answer.lower() == "yes":
-                return mode, {"TELEGRAM_BOT_TOKEN": token, "TELEGRAM_ALLOWED_USER_IDS": users}
+                return mode, {
+                    "TELEGRAM_BOT_TOKEN": token,
+                    "TELEGRAM_ALLOWED_USER_IDS": users,
+                    "TRANSMISSION_RPC_URL": rpc_url,
+                    "TRANSMISSION_USERNAME": username,
+                    "TRANSMISSION_PASSWORD": password,
+                }
             if answer.lower() == "no":
                 raise KeyboardInterrupt
             print("No changes saved. Starting input again.")
